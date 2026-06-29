@@ -1,0 +1,2 @@
+model,output_len,seed,test_mse,test_mae,predictions
+transformer,365,2026,451358.35641375976,552.1892954563509,results/predictions/transformer_365_seed2026.csv

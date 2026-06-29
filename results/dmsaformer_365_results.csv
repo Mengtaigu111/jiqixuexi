@@ -1,0 +1,6 @@
+model,output_len,seed,test_mse,test_mae,predictions
+dmsaformer,365,2026,282296.68352588324,417.4430981367908,results/predictions/dmsaformer_365_seed2026.csv
+dmsaformer,365,2027,266557.679114546,404.5094281753622,results/predictions/dmsaformer_365_seed2027.csv
+dmsaformer,365,2028,267070.4957876809,404.7579258906509,results/predictions/dmsaformer_365_seed2028.csv
+dmsaformer,365,2029,269899.94573792774,406.9896599422699,results/predictions/dmsaformer_365_seed2029.csv
+dmsaformer,365,2030,278281.5812770268,414.22506175106827,results/predictions/dmsaformer_365_seed2030.csv

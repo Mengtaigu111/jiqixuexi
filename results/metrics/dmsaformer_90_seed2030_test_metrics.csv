@@ -1,0 +1,2 @@
+model,output_len,seed,test_mse,test_mae,predictions
+dmsaformer,90,2030,151019.76411213484,299.393934375853,results/predictions/dmsaformer_90_seed2030.csv

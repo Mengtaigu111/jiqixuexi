@@ -1,0 +1,2 @@
+model,output_len,seed,test_mse,test_mae,predictions
+hybrid,365,2027,311977.9058515963,444.68040786373444,results/predictions/hybrid_365_seed2027.csv
