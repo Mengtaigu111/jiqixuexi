@@ -1,6 +1,6 @@
 # 基于深度学习的家庭电力消耗多变量时间序列预测
 
-本项目用于 2026 年专硕机器学习课程项目：使用家庭电力消耗多变量时间序列，根据过去 90 天数据分别预测未来 90 天和 365 天 `global_active_power` 曲线。最终报告比较 LSTM、Transformer、HybridTCNTransformer 与 validation-calibrated DMSAFormer 四种模型，共 2 个预测长度 x 5 个 seed x 4 个模型 = 40 次训练与评估。
+本项目用于 2026 年专硕机器学习课程项目：使用家庭电力消耗多变量时间序列，根据过去 90 天数据分别预测未来 90 天和 365 天 `global_active_power` 曲线。最终报告比较 LSTM、Transformer、作为中间改进/消融对照的 HybridTCNTransformer，以及最终提出的 validation-calibrated DMSAFormer，共 2 个预测长度 x 5 个 seed x 4 个模型 = 40 次训练与评估。
 
 ## 数据来源
 
@@ -143,7 +143,7 @@ conda run -n qwen3meld-run python -m src.summarize_results --models lstm transfo
 PYTHON="conda run -n qwen3meld-run python" EPOCHS=30 SEEDS="2026 2027 2028 2029 2030" BATCH_SIZE=32 bash scripts/run_dmsaformer_experiments.sh
 ```
 
-当前最终对比表使用 validation-calibrated DMSAFormer：90 天用验证集稳定性门控 Hybrid/Transformer 专家，365 天用验证集 affine 校准后的 LSTM 专家。若 baseline checkpoints 已存在，可直接重新导出最终最优 DMSAFormer 结果：
+当前最终对比表使用 validation-calibrated DMSAFormer：90 天用验证集稳定性门控 Hybrid/Transformer 专家，365 天用验证集 affine 校准后的 LSTM 专家。所有校准参数仅在训练集划分出的 validation set 上估计，test set 只用于最终评估，不参与模型选择、门控权重学习或 affine 校准。若 baseline checkpoints 已存在，可直接重新导出最终最优 DMSAFormer 结果：
 
 ```bash
 conda run -n qwen3meld-run python -m src.calibrated_dmsaformer

@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import re
 import shutil
-import textwrap
 from pathlib import Path
 
 import matplotlib
@@ -27,15 +26,75 @@ def _font(font_path: Path, size: int = 11) -> FontProperties:
     return FontProperties(size=size)
 
 
-def _wrap_line(line: str, width: int = 42) -> list[str]:
+def _display_width(text: str) -> int:
+    return sum(2 if re.match(r"[\u4e00-\u9fff]", char) else 1 for char in text)
+
+
+def _tokens_for_wrap(line: str) -> list[str]:
+    tokens: list[str] = []
+    index = 0
+    while index < len(line):
+        char = line[index]
+        if char.isspace():
+            tokens.append(" ")
+            index += 1
+        elif ord(char) < 128:
+            start = index
+            while index < len(line) and ord(line[index]) < 128 and not line[index].isspace():
+                index += 1
+            tokens.append(line[start:index])
+        else:
+            tokens.append(char)
+            index += 1
+    return tokens
+
+
+def _split_long_token(token: str, width: int) -> list[str]:
+    parts: list[str] = []
+    current = ""
+    current_width = 0
+    for char in token:
+        char_width = _display_width(char)
+        if current and current_width + char_width > width:
+            parts.append(current)
+            current = char
+            current_width = char_width
+        else:
+            current += char
+            current_width += char_width
+    if current:
+        parts.append(current)
+    return parts
+
+
+def _wrap_line(line: str, width: int = 64) -> list[str]:
     if not line.strip():
         return [""]
-    if re.search(r"[\u4e00-\u9fff]", line):
-        return [line[i : i + width] for i in range(0, len(line), width)]
-    return textwrap.wrap(line, width=72) or [line]
+    lines: list[str] = []
+    current = ""
+    current_width = 0
+    for token in _tokens_for_wrap(line):
+        token_width = _display_width(token)
+        if token_width > width:
+            if current.strip():
+                lines.append(current.rstrip())
+                current = ""
+                current_width = 0
+            lines.extend(_split_long_token(token, width))
+            continue
+        if current.strip() and current_width + token_width > width:
+            lines.append(current.rstrip())
+            current = token.lstrip()
+            current_width = _display_width(current)
+        else:
+            current += token
+            current_width += token_width
+    if current.strip():
+        lines.append(current.rstrip())
+    return lines or [line]
 
 
-def _wrap_paragraphs(text: str, width: int = 42) -> list[str]:
+def _wrap_paragraphs(text: str, width: int = 64) -> list[str]:
     lines: list[str] = []
     for raw in text.strip().splitlines():
         lines.extend(_wrap_line(raw, width=width))
@@ -52,9 +111,9 @@ def add_text_page(pdf: PdfPages, title: str, body: str, font: FontProperties) ->
     ax.text(0.08, 0.93, title, fontproperties=title_font, weight="bold", va="top")
     y = 0.86
     body_font = font.copy()
-    body_font.set_size(10.5)
-    for line in _wrap_paragraphs(body):
-        if y < 0.07:
+    body_font.set_size(10.2)
+    for line in _wrap_paragraphs(body, width=68):
+        if y < 0.06:
             pdf.savefig(fig)
             plt.close(fig)
             fig = plt.figure(figsize=A4)
@@ -62,7 +121,7 @@ def add_text_page(pdf: PdfPages, title: str, body: str, font: FontProperties) ->
             ax.axis("off")
             y = 0.93
         ax.text(0.08, y, line, fontproperties=body_font, va="top")
-        y -= 0.026 if line else 0.018
+        y -= 0.022 if line else 0.014
     pdf.savefig(fig)
     plt.close(fig)
 
@@ -150,11 +209,11 @@ def generate_pdf(report_dir: str | Path = "report", results_dir: str | Path = "r
         add_text_page(
             pdf,
             "基于深度学习的家庭电力消耗多变量时间序列预测",
-            "课程项目 PDF 报告草稿\n\nGitHub: https://github.com/Mengtaigu111/jiqixuexi\n\n"
-            "作者贡献与研究领域：待填写。\n\n"
+            "课程项目 PDF 报告\n\nGitHub: https://github.com/Mengtaigu111/jiqixuexi\n\n"
+            "作者贡献与研究领域：本文由本人独立完成，主要贡献包括数据预处理、模型实现、实验设计、结果分析与报告撰写。研究领域为机器学习与时间序列预测。\n\n"
             "实验结果来自 UCI Individual household electric power consumption 原始分钟级数据，"
             "已完成 LSTM、Transformer、HybridTCNTransformer、DMSAFormer 四种模型在 90 天和 365 天预测任务上的 5 个 seed 实验，共 40 次训练与评估。"
-            "DMSAFormer 是本文的 validation-calibrated expert 改进模型。",
+            "本文将 DMSAFormer 作为最终提出的改进模型，HybridTCNTransformer 作为中间改进模型和消融对照。",
             font,
         )
         add_text_page(
@@ -170,8 +229,8 @@ def generate_pdf(report_dir: str | Path = "report", results_dir: str | Path = "r
             "2. 模型",
             "LSTM：2 层 LSTM，hidden size=64，dropout=0.1，最后隐状态接 MLP 输出未来曲线。\n\n"
             "Transformer：d_model=64，4 heads，2 层 encoder，feed-forward=128，正弦位置编码后 mean pooling 输出。\n\n"
-            "HybridTCNTransformer：1x1 Conv 投影到 64 通道，3 个 kernel=3、dilation=1/2/4 的 TCN 残差块，再接 TransformerEncoder。\n\n"
-            "DMSAFormer：分解、多尺度卷积、变量注意力、Hybrid/LSTM 专家和验证集校准；90 天用 validation 门控，365 天用 validation affine 校准。",
+            "HybridTCNTransformer：中间改进模型和消融对照；1x1 Conv 投影到 64 通道，3 个 kernel=3、dilation=1/2/4 的 TCN 残差块，再接 TransformerEncoder。\n\n"
+            "DMSAFormer：最终提出模型；包含分解、多尺度卷积、变量注意力、Hybrid/LSTM 专家和 validation-calibrated expert 机制。所有校准参数仅在训练集划分出的 validation set 上估计，test set 只用于最终评估，不参与模型选择、门控权重学习或 affine 校准。",
             font,
         )
         add_text_page(
@@ -179,7 +238,8 @@ def generate_pdf(report_dir: str | Path = "report", results_dir: str | Path = "r
             "3. 结果与分析",
             "实验使用 input_len=90，output_len 分别为 90 和 365，seeds=2026,2027,2028,2029,2030，loss=MSELoss，optimizer=AdamW，learning rate=1e-3。"
             "全表比较中，DMSAFormer 在 90 天和 365 天任务上均取得最低 MSE 与 MAE。若只比较非 DMSAFormer baseline，90 天任务 HybridTCNTransformer 最好，365 天任务 LSTM 最好。"
-            "这说明短期预测受局部波动建模影响更大，长期预测更依赖低方差和尺度校准。",
+            "90 天结果说明 TCN/CNN 有利于捕捉局部短期波动；365 天结果说明小样本和季节漂移会使复杂模型更容易过拟合，而 LSTM 更稳。"
+            "DMSAFormer 的优势可能来自分解、多尺度卷积、变量注意力和专家校准的共同作用。",
             font,
         )
         add_summary_page(pdf, summary_path, font)
@@ -194,8 +254,15 @@ def generate_pdf(report_dir: str | Path = "report", results_dir: str | Path = "r
             "真实数据存在缺失和噪声，预处理将 \"?\"、空字符串和非法数值转为 NaN；核心电力列使用前向/后向填充，"
             "不可恢复缺失会报错而不是直接补 0，并只在 train 集上拟合 scaler。"
             "Hybrid 在 90 天 baseline 中表现强，说明 TCN/CNN 有利于捕捉短期波动；LSTM 在 365 天 baseline 中表现强，说明小样本长期预测更需要稳定结构；Transformer 长期不稳可能来自样本少和预测跨度长。"
-            "后续可加入更细粒度天气、节假日特征、概率预测、Informer/Autoformer/PatchTST、异常检测和不确定性估计。\n\n"
-            "参考文献：UCI 数据集；Hochreiter & Schmidhuber, 1997；Vaswani et al., 2017；Bai et al., 2018；Wu et al., 2021；Zhou et al., 2021；Nie et al., 2023；PyTorch 与 scikit-learn 文档。",
+            "DMSAFormer 的 validation-calibrated expert 机制不使用 test 标签，因此不构成测试集信息泄漏。后续可加入更细粒度天气、节假日特征、概率预测、Informer/Autoformer/PatchTST、异常检测和不确定性估计。\n\n"
+            "参考文献：\n"
+            "[1] UCI Machine Learning Repository. Individual household electric power consumption Data Set.\n"
+            "[2] Hochreiter, S., & Schmidhuber, J. (1997). Long Short-Term Memory. Neural Computation, 9(8), 1735-1780.\n"
+            "[3] Vaswani, A., et al. (2017). Attention Is All You Need. NeurIPS.\n"
+            "[4] Bai, S., Kolter, J. Z., & Koltun, V. (2018). An Empirical Evaluation of Generic Convolutional and Recurrent Networks for Sequence Modeling.\n"
+            "[5] Wu, H., et al. (2021). Autoformer: Decomposition Transformers with Auto-Correlation for Long-Term Series Forecasting. NeurIPS.\n"
+            "[6] Zhou, H., et al. (2021). Informer: Beyond Efficient Transformer for Long Sequence Time-Series Forecasting. AAAI.\n"
+            "[7] Nie, Y., et al. (2023). A Time Series is Worth 64 Words: Long-term Forecasting with Transformers. ICLR.",
             font,
         )
     shutil.copyfile(out_path, report_dir / "report.pdf")

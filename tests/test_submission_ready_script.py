@@ -23,11 +23,17 @@ def test_submission_ready_script_checks_current_artifacts_without_running_pytest
 
 def test_submission_ready_script_reports_placeholder_locations():
     script = Path("scripts/check_submission_ready.sh")
+    draft = Path("report/report_draft.md")
+    original = draft.read_text(encoding="utf-8")
     env = os.environ.copy()
     env["PYTHON"] = sys.executable
     env["SKIP_TESTS"] = "1"
 
-    result = subprocess.run(["bash", str(script)], env=env, text=True, capture_output=True)
+    try:
+        draft.write_text(original + "\n作者贡献与研究领域：待填写\n", encoding="utf-8")
+        result = subprocess.run(["bash", str(script)], env=env, text=True, capture_output=True)
+    finally:
+        draft.write_text(original, encoding="utf-8")
 
     assert result.returncode == 1
     assert "Placeholder GitHub/author fields remain" in result.stderr

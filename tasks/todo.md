@@ -194,6 +194,48 @@ PDF 补充约束：
 
 ---
 
+# 报告提交前修订：DMSA 定位与排版
+
+## 需求规格
+
+目标：根据用户二次审查意见，完成提交前打磨：明确 DMSAFormer 是最终提出的改进模型，HybridTCNTransformer 是中间改进/消融对照；写清 validation 校准不使用 test set；移除作者贡献占位；修复 PDF 中英文术语断词；优化 MSE/MAE 柱状图标签和参考文献格式。
+
+验收项：
+
+- [x] 报告不再出现“作者贡献与研究领域：待填写”。
+- [x] 报告明确“DMSAFormer 为最终提出模型，HybridTCNTransformer 为中间改进模型或消融对照”。
+- [x] DMSAFormer 校准说明明确 validation set 来自训练划分，test set 只用于最终评估。
+- [x] `results/metrics/summary.csv` 中 DMSAFormer 90 天 `MSE std=2207.871584...` 的事实已核对。
+- [x] MSE/MAE 柱状图使用正式模型名，并按 90/365 horizon 分面显示。
+- [x] PDF 正文不再把 `MSELoss`、`TransformerEncoder`、`DMSAFormer` 等英文术语切断。
+- [x] PDF/Word/Markdown 参考文献为完整条目格式。
+
+## 执行计划
+
+1. [x] 核对 `results/metrics/summary.csv` 中 DMSAFormer 90 天 MSE std。
+2. [x] 更新 Markdown、PDF 脚本、Word 脚本和 README 的 DMSA 定位、作者贡献、validation/test 边界和参考文献。
+3. [x] 更新 `src/summarize_results.py` 的 MSE/MAE 柱状图样式。
+4. [x] 重新生成汇总图、PDF、Word 和截图素材。
+5. [x] 运行 pytest、提交预检查、Word 校验、PDF 页数和文本扫描，提交并推送。
+
+## 进度记录
+
+- 2026-06-29：已核对 `results/metrics/summary.csv`，DMSAFormer 90 天 `MSE std` 为 `2207.871584410503`，报告中 `2207.87` 与 CSV 一致。
+- 2026-06-29：已将 README、Markdown 草稿、PDF 生成脚本和 Word 生成脚本统一为“DMSAFormer 是最终提出的分解式多尺度专家融合模型，HybridTCNTransformer 是中间改进/消融对照”的口径；同时明确 validation 校准参数只在验证集估计，test set 只用于最终评估。
+- 2026-06-29：已补入作者贡献与研究领域正式说明，移除“待填写”；新增组件作用与粗粒度消融说明，避免伪造逐模块消融数值。
+- 2026-06-29：已更新 MSE/MAE 柱状图为 90/365 分面和正式模型名，重新生成 `results/figures/metric_bar_mse.png`、`metric_bar_mae.png` 及截图。
+- 2026-06-29：PDF 初次重新生成后变为 11 页，原因是讨论页参考文献溢出；已通过调整 `src/generate_report_pdf.py` 的文本换行宽度和行距恢复两份 PDF 均为 10 页。
+- 2026-06-29：旧测试仍假设仓库必须保留作者占位符；已改为测试运行时临时注入“待填写”来验证失败分支，正式仓库无占位符时提交脚本可直接通过。
+- 2026-06-29：验证结果：`conda run -n qwen3meld-run python -m pytest tests -q` 为 `20 passed, 1 warning`；`PYTHON="conda run -n qwen3meld-run python" SKIP_TESTS=1 bash scripts/check_submission_ready.sh` 通过；两份 Word `officecli validate` 均通过；`rg` 未发现占位符或已知断词模式。
+
+## 结果复盘
+
+- 本轮修订把方法叙事从“全新架构”收敛为“面向任务的分解式多尺度专家融合模型”，更贴合已有模块和实验事实。
+- DMSAFormer 指标优势仍保留为正式结论，但报告明确其提升包含 validation-calibrated expert 机制，避免被误读为单一 checkpoint 直接输出。
+- 提交检查现在适配正式信息已填写状态，同时仍保留占位符回归测试。
+
+---
+
 # Goal 2：DMSAFormer 第三个改进模型 Todo
 
 ## 需求规格

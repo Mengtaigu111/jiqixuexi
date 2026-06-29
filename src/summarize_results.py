@@ -90,17 +90,30 @@ def write_summary_outputs(summary: pd.DataFrame, metrics_dir: str | Path) -> tup
 
 def _plot_metric_bar(summary: pd.DataFrame, metric_prefix: str, out_path: Path) -> None:
     ensure_dir(out_path.parent)
-    fig, ax = plt.subplots(figsize=(9, 4.8), dpi=160)
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.8), dpi=160, sharey=False)
+    name_map = {
+        "dmsaformer": "DMSAFormer",
+        "hybrid": "HybridTCNTransformer",
+        "lstm": "LSTM",
+        "transformer": "Transformer",
+    }
     if summary.empty:
-        ax.text(0.5, 0.5, "No metrics available", ha="center", va="center")
+        for ax in axes:
+            ax.text(0.5, 0.5, "No metrics available", ha="center", va="center")
     else:
-        labels = [f"{row.Model}-{int(row.Horizon)}" for row in summary.itertuples()]
-        means = summary[f"{metric_prefix} mean"].to_numpy(dtype=float)
-        stds = summary[f"{metric_prefix} std"].to_numpy(dtype=float)
-        ax.bar(labels, means, yerr=stds, capsize=4, color="#4c78a8")
-        ax.set_ylabel(metric_prefix)
-        ax.tick_params(axis="x", labelrotation=35)
-        ax.grid(axis="y", alpha=0.25)
+        for ax, horizon in zip(axes, [90, 365], strict=True):
+            subset = summary[summary["Horizon"].astype(int) == horizon].sort_values(f"{metric_prefix} mean")
+            if subset.empty:
+                ax.text(0.5, 0.5, f"No {horizon}-day metrics", ha="center", va="center")
+                continue
+            labels = [name_map.get(str(row.Model), str(row.Model)) for row in subset.itertuples()]
+            means = subset[f"{metric_prefix} mean"].to_numpy(dtype=float)
+            stds = subset[f"{metric_prefix} std"].to_numpy(dtype=float)
+            ax.bar(labels, means, yerr=stds, capsize=4, color="#4c78a8")
+            ax.set_title(f"{metric_prefix} comparison ({horizon}-day horizon)")
+            ax.set_ylabel(metric_prefix)
+            ax.tick_params(axis="x", labelrotation=25)
+            ax.grid(axis="y", alpha=0.25)
     fig.tight_layout()
     fig.savefig(out_path)
     plt.close(fig)

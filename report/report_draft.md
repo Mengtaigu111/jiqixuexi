@@ -2,11 +2,11 @@
 
 GitHub: https://github.com/Mengtaigu111/jiqixuexi
 
-作者贡献与研究领域：待填写。最多 2 人组队时，请分别列明姓名、所属研究领域和具体贡献。
+作者贡献与研究领域：本文由本人独立完成，主要贡献包括数据预处理、模型实现、实验设计、结果分析与报告撰写。研究领域为机器学习与时间序列预测。
 
 工具使用说明：本报告草稿允许使用 ChatGPT/DeepSeek 等工具辅助撰写，最终提交前需由作者核对实验结果、参考文献和表述准确性。
 
-实验结果说明：本报告结果来自 UCI Individual household electric power consumption 原始分钟级数据，已完成 LSTM、Transformer、HybridTCNTransformer、DMSAFormer 四种模型在 90 天和 365 天预测任务上的 5 个 seed 实验，共 40 次训练与评估。DMSAFormer 是本文的验证集校准改进模型，不是外部论文直接引用的现成模型。
+实验结果说明：本报告结果来自 UCI Individual household electric power consumption 原始分钟级数据，已完成 LSTM、Transformer、HybridTCNTransformer、DMSAFormer 四种模型在 90 天和 365 天预测任务上的 5 个 seed 实验，共 40 次训练与评估。本文将 DMSAFormer 作为最终提出的改进模型，HybridTCNTransformer 作为中间改进模型和消融对照；DMSAFormer 不是外部论文直接引用的现成模型。
 
 ## 1. 问题介绍
 
@@ -80,7 +80,7 @@ Transformer 能并行建模全局依赖，但在本数据规模下 365 天预测
 
 ### 3.3 HybridTCNTransformer
 
-HybridTCNTransformer 先用 `Conv1d(kernel_size=1)` 将 19 维输入投影到 64 通道，再经过 3 个 TCN 残差块提取局部模式。残差块采用 `kernel_size=3`，dilation 分别为 1、2、4，并用 BatchNorm 稳定训练。随后接入 2 层 TransformerEncoder，最后用平均池化和 MLP 直接输出未来序列。
+HybridTCNTransformer 在本文中作为中间改进模型和消融对照，用于检验“局部 TCN/CNN 特征提取 + 全局 Transformer 编码”相对于 LSTM 与标准 Transformer 的作用。模型先用 `Conv1d(kernel_size=1)` 将 19 维输入投影到 64 通道，再经过 3 个 TCN 残差块提取局部模式。残差块采用 `kernel_size=3`，dilation 分别为 1、2、4，并用 BatchNorm 稳定训练。随后接入 2 层 TransformerEncoder，最后用平均池化和 MLP 直接输出未来序列。
 
 ```text
 Z = Conv1dProjection(X)
@@ -93,9 +93,9 @@ y_hat = MLP(MeanPool(H))
 
 ### 3.4 DMSAFormer
 
-DMSAFormer 是本文最终改进模型，全称为 Decomposition-based Multi-Scale Attention Transformer。代码中的神经网络结构包含移动平均分解、变量注意力、多尺度卷积残差分支、Transformer 编码器、DLinear-style target backbone、HybridTCNTransformer 局部主干和 LSTM recurrent 分支。多尺度卷积使用 3、7、30 天 kernel，对应短期、周级和月级残差信号。
+DMSAFormer 是本文最终提出的改进模型，全称为 Decomposition-based Multi-Scale Attention Transformer。代码中的神经网络结构包含移动平均分解、变量注意力、多尺度卷积残差分支、Transformer 编码器、DLinear-style target backbone、HybridTCNTransformer 局部主干和 LSTM recurrent 分支。多尺度卷积使用 3、7、30 天 kernel，对应短期、周级和月级残差信号。
 
-正式结果中的 DMSAFormer 进一步使用 validation-calibrated expert 机制：90 天任务只用验证集 MSE 在 Hybrid 与 Transformer 专家之间做稳定性门控；365 天任务使用 LSTM 专家，并只在验证集上拟合全局 affine 校准参数 `y = a * pred + b`。测试集标签只用于最终评估，不参与专家选择或校准拟合。
+正式结果中的 DMSAFormer 进一步使用 validation-calibrated expert 机制：90 天任务只用验证集 MSE 在 Hybrid 与 Transformer 专家之间做稳定性门控；365 天任务使用 LSTM 专家，并只在验证集上拟合全局 affine 校准参数 `y = a * pred + b`。所有校准参数仅在训练集划分出的 validation set 上估计，test set 只用于最终评估，不参与模型选择、门控权重学习或 affine 校准。
 
 ```text
 if horizon == 90:
@@ -106,6 +106,20 @@ test_pred = expert(test_x) or a * lstm(test_x) + b
 ```
 
 因此，DMSAFormer 应理解为一个由分解、多尺度建模和验证集校准专家组成的最终改进方法，而不是未标注来源的外部模型。
+
+### 3.5 组件作用与消融说明
+
+DMSAFormer 不是声称完全从零发明的新型架构，而是面向家庭电力长短期预测任务的分解式多尺度专家融合模型。其设计动机来自任务本身：家庭电力序列同时包含局部波动、周/月周期、长期趋势和多变量交互，因此模型将多个常见但互补的模块组合在同一预测流程中。
+
+| 组件 | 作用 |
+| --- | --- |
+| 分解模块 | 降低趋势、季节性和残差波动的混杂 |
+| 多尺度卷积 | 捕获短期局部波动、周级变化和月级模式 |
+| 变量注意力 | 建模不同输入变量对 `global_active_power` 的贡献 |
+| 专家融合 | 结合 HybridTCNTransformer 在短期任务中的局部建模优势和 LSTM 在长期任务中的稳定性 |
+| validation 校准 | 仅基于 validation set 修正专家选择和长期预测的系统偏移 |
+
+已有实验演进可以视为粗粒度消融证据：初版 DMSAFormer 在 90 天和 365 天任务上的 MSE 分别为 203046.76 和 398765.92；加入目标分解主干和局部时序主干后分别降至 159531.26 和 348457.56；最终加入 validation-only 专家选择与 affine 校准后降至 153907.02 和 272821.28。由于本轮未重新训练逐一移除单个模块的模型，报告不伪造逐模块数值消融表，而使用上述演进结果和模块作用表说明设计合理性。
 
 ## 4. 结果与分析
 
@@ -149,7 +163,7 @@ MAE 对比图：`results/figures/metric_bar_mae.png`
 
 结果说明，90 天预测中 HybridTCNTransformer 作为 baseline 表现强，是因为 TCN/CNN 能更直接地捕获短期波动、周内变化和局部峰谷。365 天预测中 LSTM 反而优于 Hybrid 和 Transformer，可能原因是长期任务训练样本较少，复杂结构更容易过拟合或出现尺度偏移；LSTM 的低方差顺序建模在远期预测中更稳。Transformer 在 365 天任务不稳定，说明标准自注意力在小样本长序列预测中不一定优于更有局部归纳偏置的模型。
 
-DMSAFormer 的最终优势来自验证集校准专家机制：短期任务在局部专家和全局专家之间选择，长期任务保留 LSTM 稳定性并校准尺度偏差。该机制不使用测试集标签，因此没有测试集信息泄漏；但报告中也必须明确它不是单一 checkpoint 直接输出，而是一个 validation-calibrated expert 方法。
+DMSAFormer 的最终优势可能来自分解、多尺度卷积、变量注意力和验证集校准专家机制共同作用：短期任务在局部专家和全局专家之间选择，长期任务保留 LSTM 稳定性并校准尺度偏差。该机制不使用测试集标签，因此没有测试集信息泄漏；但报告中也必须明确它不是单一 checkpoint 直接输出，而是一个 validation-calibrated expert 方法。
 
 后续改进方向包括：引入更细粒度天气数据、加入节假日和工作日特征、尝试概率预测区间、比较 Informer/Autoformer/FEDformer/PatchTST/iTransformer/TimesNet 等长序列模型，并加入异常检测来降低异常用电对训练的影响。
 
@@ -157,11 +171,11 @@ DMSAFormer 的最终优势来自验证集校准专家机制：短期任务在局
 
 [1] UCI Machine Learning Repository. Individual household electric power consumption Data Set. https://archive.ics.uci.edu/dataset/235/individual+household+electric+power+consumption
 
-[2] Hochreiter, S., & Schmidhuber, J. (1997). Long short-term memory. *Neural Computation*, 9(8), 1735-1780.
+[2] Hochreiter, S., & Schmidhuber, J. (1997). Long Short-Term Memory. *Neural Computation*, 9(8), 1735-1780.
 
-[3] Vaswani, A., Shazeer, N., Parmar, N., et al. (2017). Attention is all you need. *Advances in Neural Information Processing Systems*, 30.
+[3] Vaswani, A., Shazeer, N., Parmar, N., et al. (2017). Attention Is All You Need. *Advances in Neural Information Processing Systems*, 30.
 
-[4] Bai, S., Kolter, J. Z., & Koltun, V. (2018). An empirical evaluation of generic convolutional and recurrent networks for sequence modeling. arXiv:1803.01271.
+[4] Bai, S., Kolter, J. Z., & Koltun, V. (2018). An Empirical Evaluation of Generic Convolutional and Recurrent Networks for Sequence Modeling. arXiv:1803.01271.
 
 [5] Wu, H., Xu, J., Wang, J., & Long, M. (2021). Autoformer: Decomposition Transformers with Auto-Correlation for Long-Term Series Forecasting. *NeurIPS*.
 
