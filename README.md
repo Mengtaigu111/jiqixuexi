@@ -1,6 +1,6 @@
 # 基于深度学习的家庭电力消耗多变量时间序列预测
 
-本项目用于 2026 年专硕机器学习课程项目：使用家庭电力消耗多变量时间序列，根据过去 90 天数据分别预测未来 90 天和 365 天 `global_active_power` 曲线。课程主报告比较 LSTM、Transformer 与改进的 HybridTCNTransformer；仓库中另保留 DMSAFormer 作为可选扩展实验。
+本项目用于 2026 年专硕机器学习课程项目：使用家庭电力消耗多变量时间序列，根据过去 90 天数据分别预测未来 90 天和 365 天 `global_active_power` 曲线。最终报告比较 LSTM、Transformer、HybridTCNTransformer 与 validation-calibrated DMSAFormer 四种模型，共 2 个预测长度 x 5 个 seed x 4 个模型 = 40 次训练与评估。
 
 ## 数据来源
 
@@ -76,14 +76,11 @@ python -m src.data_preprocess --data_dir data/raw --output_dir data/processed --
 python -m src.train --model lstm --output_len 90 --seed 2026 --epochs 30 --device auto
 ```
 
-课程主实验支持模型：
+最终报告支持模型：
 
 - `lstm`
 - `transformer`
 - `hybrid`
-
-可选扩展模型：
-
 - `dmsaformer`
 
 支持预测长度：
@@ -112,7 +109,7 @@ python -m src.evaluate \
 
 ## 复现实验
 
-完整实验共 3 个模型 x 2 个预测长度 x 5 个 seed：
+baseline 完整实验共 3 个模型 x 2 个预测长度 x 5 个 seed：
 
 ```bash
 bash scripts/run_all_experiments.sh
@@ -140,7 +137,7 @@ PYTHON="conda run -n qwen3meld-run python" EPOCHS=1 SEEDS="2026" BATCH_SIZE=16 b
 conda run -n qwen3meld-run python -m src.summarize_results --models lstm transformer hybrid
 ```
 
-只运行可选 DMSAFormer 扩展模型：
+运行 DMSAFormer 并重新生成四模型最终结果：
 
 ```bash
 PYTHON="conda run -n qwen3meld-run python" EPOCHS=30 SEEDS="2026 2027 2028 2029 2030" BATCH_SIZE=32 bash scripts/run_dmsaformer_experiments.sh
@@ -174,7 +171,7 @@ python run_experiments.py
 汇总命令：
 
 ```bash
-python -m src.summarize_results --models lstm transformer hybrid
+python -m src.summarize_results
 ```
 
 输出：
@@ -187,4 +184,4 @@ python -m src.summarize_results --models lstm transformer hybrid
 - `results/figures/prediction_comparison_365.png`
 - `results/screenshots/`
 
-`summary.csv` 中包含 LSTM、Transformer、HybridTCNTransformer 三个课程模型在两个预测长度上的 MSE/MAE mean/std。若需要汇总当前目录下所有模型结果，可省略 `--models` 参数。
+最终报告使用不带 `--models` 的汇总结果，`summary.csv` 包含 LSTM、Transformer、HybridTCNTransformer、DMSAFormer 四个模型在两个预测长度上的 MSE/MAE mean/std。若只需要三模型 baseline 汇总，可显式使用 `--models lstm transformer hybrid`。

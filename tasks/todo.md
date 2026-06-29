@@ -157,6 +157,43 @@ PDF 补充约束：
 
 ---
 
+# 报告审查修订：四模型最终版一致性
+
+## 需求规格
+
+目标：根据用户审查意见，将 README、Markdown 草稿、PDF 和 Word 报告统一为 LSTM、Transformer、HybridTCNTransformer、DMSAFormer 四模型最终版，明确 2 个预测长度 x 5 seeds x 4 models = 40 次训练/评估，修正结论、表格、曲线图、模型细节、数据处理说明和参考文献。
+
+验收项：
+
+- [x] 报告全文不再出现“三模型 30 次实验”作为最终结果口径。
+- [x] 结果分析明确：DMSAFormer 在两个 horizon 上全表最优；非 DMSAFormer baseline 中 90 天 Hybrid 最好，365 天 LSTM 最好。
+- [x] 模型章节补充输入/输出维度、主要超参数、loss、optimizer、直接多步预测和分 horizon 训练说明。
+- [x] 结果表按 90 天和 365 天拆分，数值保留两位小数，展示 mean ± std。
+- [x] 预测对比曲线每个模型只显示一条代表 seed 曲线，避免图例重复。
+- [x] Markdown、PDF、Word、README 和提交检查脚本验证通过。
+
+## 执行计划
+
+1. [x] 审计当前报告、生成脚本、README、summary 和测试约束。
+2. [x] 修改 `src/summarize_results.py`，让预测对比图按模型选代表 seed 绘制。
+3. [x] 修改 `report/report_draft.md`、`src/generate_report_pdf.py`、`scripts/generate_word_report.py` 和 README 的最终实验口径。
+4. [x] 重新生成 summary 图、分析图、PDF 和 Word 文件。
+5. [x] 运行 pytest、submission readiness、Office 文档校验和关键文本扫描。
+
+## 进度记录
+
+- 2026-06-29：用户指出报告当前是草稿版，核心问题为三模型/四模型、30/40 次、表格最优模型和正文结论不一致；本轮决定采用四模型最终版口径，因为 `results/metrics/summary.csv` 已包含 DMSAFormer、Hybrid、LSTM、Transformer 共 8 行且每行 `Runs=5`。
+- 2026-06-29：已更新 README、Markdown 草稿、PDF 生成脚本、Word 生成脚本和预测对比图逻辑；报告统一为四模型 40 次实验，结果表拆为 90/365 两张 `mean ± std` 表，并补充数据处理、模型超参数、DMSAFormer validation-calibrated expert 说明和正式参考文献。
+- 2026-06-29：已重新生成 `results/figures/prediction_comparison_90.png`、`prediction_comparison_365.png`、分析图、两份 PDF 和两份 Word。验证结果：`conda run -n qwen3meld-run python -m pytest tests -q` 为 `20 passed, 1 warning`；`ALLOW_PLACEHOLDERS=1 SKIP_TESTS=1` 提交预检查通过；`officecli validate` 对两份 Word 均通过；PDF 均为 10 页。
+
+## 结果复盘
+
+- 这次修订的关键不是重跑实验，而是统一报告叙述与已有正式结果。四模型最终版更符合当前 `summary.csv` 和 README 中 DMSAFormer 最终校准实验的事实。
+- 预测曲线改为每模型代表 seed 后，图例不再重复 20 次以上，结果页可读性更强。
+- 仍需最终提交前由作者填写真实作者贡献和研究领域；当前预检查需要 `ALLOW_PLACEHOLDERS=1` 才会跳过该项。
+
+---
+
 # Goal 2：DMSAFormer 第三个改进模型 Todo
 
 ## 需求规格

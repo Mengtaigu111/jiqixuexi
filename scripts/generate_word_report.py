@@ -214,7 +214,10 @@ def toc_entry(text: str, level: int = 1) -> None:
 
 
 def read_summary_records() -> list[dict[str, str]]:
-    with (ROOT / "results/summary.csv").open(newline="", encoding="utf-8") as f:
+    path = ROOT / "results" / "metrics" / "summary.csv"
+    if not path.exists():
+        path = ROOT / "results" / "summary.csv"
+    with path.open(newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
 
@@ -234,23 +237,22 @@ def val(stats: dict[str, float], key: str) -> str:
     return f"{stats[key]:.3f}" if key in stats else "见图"
 
 
-def read_summary_rows() -> list[list[str]]:
-    rows = [["模型", "预测长度", "MSE均值", "MSE标准差", "MAE均值", "MAE标准差", "轮数"]]
+def read_summary_rows(horizon: str) -> list[list[str]]:
+    rows = [["模型", "MSE mean ± std", "MAE mean ± std", "轮数"]]
     name_map = {
         "dmsaformer": "DMSAFormer",
-        "hybrid": "Hybrid",
+        "hybrid": "HybridTCNTransformer",
         "lstm": "LSTM",
         "transformer": "Transformer",
     }
-    for row in read_summary_records():
+    selected = [row for row in read_summary_records() if row["Horizon"] == horizon]
+    selected.sort(key=lambda row: float(row["MSE mean"]))
+    for row in selected:
         rows.append(
             [
                 name_map.get(row["Model"], row["Model"]),
-                row["Horizon"],
-                f"{float(row['MSE mean']):.3f}",
-                f"{float(row['MSE std']):.3f}",
-                f"{float(row['MAE mean']):.3f}",
-                f"{float(row['MAE std']):.3f}",
+                f"{float(row['MSE mean']):.2f} ± {float(row['MSE std']):.2f}",
+                f"{float(row['MAE mean']):.2f} ± {float(row['MAE std']):.2f}",
                 row["Runs"],
             ]
         )
@@ -272,14 +274,14 @@ def cover_metric_table(stats: dict[str, float]) -> None:
             ["任务", "DMSAFormer MSE", "DMSAFormer MAE", "相对最强 baseline"],
             [
                 "未来 90 天",
-                f"{float(row90['MSE mean']):.3f}" if row90 else "见结果表",
-                f"{float(row90['MAE mean']):.3f}" if row90 else "见结果表",
+                f"{float(row90['MSE mean']):.2f}" if row90 else "见结果表",
+                f"{float(row90['MAE mean']):.2f}" if row90 else "见结果表",
                 "MSE 降低 " + pct(stats, "90_mse_improvement_pct"),
             ],
             [
                 "未来 365 天",
-                f"{float(row365['MSE mean']):.3f}" if row365 else "见结果表",
-                f"{float(row365['MAE mean']):.3f}" if row365 else "见结果表",
+                f"{float(row365['MSE mean']):.2f}" if row365 else "见结果表",
+                f"{float(row365['MAE mean']):.2f}" if row365 else "见结果表",
                 "MSE 降低 " + pct(stats, "365_mse_improvement_pct"),
             ],
         ],
@@ -305,10 +307,10 @@ def build_report() -> None:
 
     add_p("2026 年专硕机器学习课程项目报告", size="10.5pt", bold="true", color="FFFFFF", align="center", shd=f"clear;{DARK}", spaceBefore="12pt", spaceAfter="18pt")
     add_p("基于深度学习的家庭电力消耗多变量时间序列预测", size="25pt", bold="true", color=DARK, align="center", spaceAfter="12pt")
-    add_p("LSTM、Transformer 与验证集校准 DMSAFormer 的比较研究", size="14.5pt", bold="true", color=ACCENT, align="center", spaceAfter="18pt")
+    add_p("LSTM、Transformer、HybridTCNTransformer 与验证集校准 DMSAFormer 的比较研究", size="14.5pt", bold="true", color=ACCENT, align="center", spaceAfter="18pt")
     add_p("关键结果", size="12pt", bold="true", color=DARK, align="center", spaceAfter="6pt")
     cover_metric_table(stats)
-    add_p("实验协议：全部模型均按 90 天输入分别预测未来 90 天与 365 天，每个设置运行 5 个随机种子；DMSAFormer 的专家选择与 affine 校准只使用验证集，不使用测试集标签。", size="10pt", font=FONT, font_ea=FONT, color="444444", align="justify", firstLineIndent=420, lineSpacing="1.25x", spaceBefore="8pt", spaceAfter="12pt")
+    add_p("实验协议：四种模型均按 90 天输入分别预测未来 90 天与 365 天，每个设置运行 5 个随机种子，共 40 次训练与评估；DMSAFormer 的专家选择与 affine 校准只使用验证集，不使用测试集标签。", size="10pt", font=FONT, font_ea=FONT, color="444444", align="justify", firstLineIndent=420, lineSpacing="1.25x", spaceBefore="8pt", spaceAfter="12pt")
     add_p("项目信息", size="12pt", bold="true", color=DARK, align="center", spaceAfter="6pt")
     add_p("数据集：UCI Individual household electric power consumption；任务：多变量日级时间序列预测。", size="10.5pt", align="center", color=MUTED, spaceAfter="3pt")
     add_p(f"GitHub 链接：{REPO_URL}", size="10.5pt", align="center", color=MUTED, spaceAfter="3pt")
@@ -327,8 +329,9 @@ def build_report() -> None:
         (1, "3. 模型方法"),
         (2, "3.1 LSTM 基线模型"),
         (2, "3.2 Transformer 基线模型"),
-        (2, "3.3 改进模型 DMSAFormer"),
-        (2, "3.4 改进过程与失败诊断"),
+        (2, "3.3 HybridTCNTransformer 改进基线"),
+        (2, "3.4 改进模型 DMSAFormer"),
+        (2, "3.5 改进过程与失败诊断"),
         (1, "4. 结果与分析"),
         (2, "4.1 总体指标对比"),
         (2, "4.2 相对最强 baseline 的提升幅度"),
@@ -373,12 +376,22 @@ def build_report() -> None:
         widths="1700,1500,1500,1500,1500,1500,2200",
     )
     bullet("优化器：AdamW；损失函数：MSELoss；评价指标：原尺度 MSE 与 MAE。")
-    bullet("每个模型、每个预测长度运行 seeds 2026、2027、2028、2029、2030 共 5 轮。")
+    bullet("四个模型、两个预测长度、每个设置运行 seeds 2026、2027、2028、2029、2030 共 40 次训练与评估。")
     bullet("正式训练优先使用 CUDA GPU；长实验通过 tmux 记录日志，避免中断后丢失状态。")
     bullet("所有指标、预测 CSV、曲线图和审计记录均保存在 results/ 与 goal/goal-2/ 下。")
     add_picture("results/figures/report_pipeline_flow.png", "图 1  实验流程与数据泄漏控制示意图")
 
     heading(1, "3. 模型方法", break_before=True)
+    add_table(
+        [
+            ["模型", "关键结构与超参数", "输出方式"],
+            ["LSTM", "2 层 LSTM，hidden size=64，dropout=0.1，LayerNorm+MLP head", "直接输出 90/365 天"],
+            ["Transformer", "d_model=64，4 heads，2 层 encoder，FFN=128，dropout=0.1", "mean pooling 后直接多步预测"],
+            ["HybridTCNTransformer", "1x1 Conv 投影，3 个 kernel=3、dilation=1/2/4 的 TCN 残差块，2 层 TransformerEncoder", "局部特征+全局依赖后直接输出"],
+            ["DMSAFormer", "分解、变量注意力、3/7/30 多尺度卷积、Hybrid/LSTM 专家、validation 校准", "验证集专家选择或 affine 校准后输出"],
+        ],
+        widths="2200,6800,3000",
+    )
     heading(2, "3.1 LSTM 基线模型")
     body("LSTM 通过门控循环单元顺序读取 90 天多变量输入，并使用最后时刻隐状态表示历史窗口。随后将该表示送入多层感知机，直接输出未来 output_len 天的预测曲线。LSTM 的优势在于结构稳定、参数量适中，在样本数量较少的长期预测场景中表现较稳健。")
     code_line("h, c = LSTM(X)")
@@ -391,8 +404,14 @@ def build_report() -> None:
     code_line("H = TransformerEncoder(E)")
     code_line("y_hat = MLP(MeanPool(H))")
 
-    heading(2, "3.3 改进模型 DMSAFormer")
-    body("第三个模型采用 DMSAFormer，即 Decomposition-based Multi-Scale Attention Transformer。初始版本包含移动平均分解、变量注意力、多尺度卷积残差分支和 Transformer 编码器。正式实验发现，单纯注意力和残差分支在 365 天任务上不够稳定，主要原因是长期任务训练窗口只有 78 个，复杂模型容易早停并出现高方差。")
+    heading(2, "3.3 HybridTCNTransformer 改进基线")
+    body("HybridTCNTransformer 先通过 1x1 Conv 将 19 维日级输入投影到 64 通道，再使用三个 TCN 残差块提取局部时间模式。残差块 kernel size 为 3，dilation 分别为 1、2、4，并通过 BatchNorm 和残差连接稳定训练。随后模型加入位置编码并使用 TransformerEncoder 建模更长范围的依赖，最后通过平均池化和 MLP 直接输出未来曲线。")
+    code_line("Z = Conv1dProjection(X)")
+    code_line("Z = TCNResidualBlocks(Z, dilation=[1,2,4])")
+    code_line("y_hat = MLP(MeanPool(TransformerEncoder(PositionalEncoding(Z))))")
+
+    heading(2, "3.4 改进模型 DMSAFormer")
+    body("最终改进模型采用 DMSAFormer，即 Decomposition-based Multi-Scale Attention Transformer。初始版本包含移动平均分解、变量注意力、多尺度卷积残差分支和 Transformer 编码器。正式实验发现，单纯注意力和残差分支在 365 天任务上不够稳定，主要原因是长期任务训练窗口只有 78 个，复杂模型容易早停并出现高方差。")
     body("在文献调研后，模型引入 DLinear 风格的目标通道分解线性主干、HybridTCNTransformer 局部时序主干以及 LSTM recurrent 分支。进一步 probe 表明，单体分支融合仍不能同时超过短期和长期最强基线。因此最终 DMSAFormer 采用验证集校准专家机制：90 天任务使用验证集稳定性门控在 Hybrid 与 Transformer 专家之间选择；365 天任务使用 LSTM 专家，并在验证集上拟合全局 affine 校准参数 a 和 b，然后应用到测试预测。")
     body("该策略没有使用测试集标签进行拟合。验证集只用于专家选择和校准参数估计，测试集仅用于最终 MSE/MAE 报告。这样既保留了 DMSAFormer 的分解、多尺度和专家集成思想，也解决了小样本长期预测下单一神经网络不稳定的问题。")
     add_table(
@@ -407,8 +426,8 @@ def build_report() -> None:
     code_line("if horizon == 365: a, b = fit_affine(valid_pred_lstm, valid_true)")
     code_line("test_pred = expert(test_x) or a * lstm(test_x) + b")
 
-    heading(2, "3.4 改进过程与失败诊断")
-    body("第三模型并非一次成型。初版 DMSAFormer 在两个任务上均弱于已有模型：90 天任务比最强 Hybrid 高约 30.46% MSE，365 天任务比最强 LSTM 高约 26.05% MSE。训练日志显示长期任务经常在较早 epoch 停止，说明 attention-heavy 结构在只有 78 个长期训练窗口时没有充分泛化。")
+    heading(2, "3.5 改进过程与失败诊断")
+    body("DMSAFormer 并非一次成型。初版 DMSAFormer 在两个任务上均弱于已有模型：90 天任务比最强 Hybrid 高约 30.46% MSE，365 天任务比最强 LSTM 高约 26.05% MSE。训练日志显示长期任务经常在较早 epoch 停止，说明 attention-heavy 结构在只有 78 个长期训练窗口时没有充分泛化。")
     body("第二版把 DLinear 的分解线性思想作为低方差主干，并加入 raw-input TCN+Transformer 局部时序主干，90 天 MSE 从 203046.764 降到 159531.265，365 天 MSE 从 398765.924 降到 348457.556，但仍没有全面超过最强 baseline。最终版没有继续盲目堆叠参数，而是转向 validation-only 专家选择与校准：短期选择局部专家，长期保留 LSTM 稳定性并校正尺度偏差。")
     add_table(
         [
@@ -423,9 +442,12 @@ def build_report() -> None:
 
     heading(1, "4. 结果与分析", break_before=True)
     heading(2, "4.1 总体指标对比")
-    body("最终结果来自 90 天和 365 天两个任务的 5 个随机种子实验。下表列出各模型在测试集原始尺度上的 MSE 与 MAE 均值、标准差和运行次数。DMSAFormer 在两个预测长度上均取得最小 MSE 和 MAE，满足“第三个改进模型在最终对比中最好”的目标。")
-    add_table(read_summary_rows())
-    body("短期 90 天预测中，DMSAFormer 的 MSE 均值为 153907.015，低于 Hybrid 的 155633.435、Transformer 的 156632.342 和 LSTM 的 163266.742。长期 365 天预测中，DMSAFormer 的 MSE 均值为 272821.277，明显低于 LSTM 的 316352.063、Hybrid 的 368574.752 和 Transformer 的 442238.940。MAE 指标也呈现相同排序，说明最终改进模型不仅降低了平方误差，也降低了平均绝对偏差。")
+    body("最终结果来自 90 天和 365 天两个任务的 5 个随机种子实验，共 40 次训练与评估。下表按预测长度拆分，列出各模型在测试集原始尺度上的 MSE 与 MAE 均值、标准差和运行次数。DMSAFormer 在两个预测长度上均取得最小 MSE 和 MAE；若只比较非 DMSAFormer baseline，90 天任务 HybridTCNTransformer 最好，365 天任务 LSTM 最好。")
+    heading(3, "90 天预测结果")
+    add_table(read_summary_rows("90"), widths="3600,3600,3600,1200")
+    heading(3, "365 天预测结果")
+    add_table(read_summary_rows("365"), widths="3600,3600,3600,1200")
+    body("短期 90 天预测中，DMSAFormer 的 MSE 均值为 153907.02，低于 HybridTCNTransformer 的 155633.44、Transformer 的 156632.34 和 LSTM 的 163266.74。长期 365 天预测中，DMSAFormer 的 MSE 均值为 272821.28，明显低于 LSTM 的 316352.06、HybridTCNTransformer 的 368574.75 和 Transformer 的 442238.94。MAE 指标也呈现相同排序，说明最终改进模型不仅降低了平方误差，也降低了平均绝对偏差。")
     add_picture("results/figures/metric_bar_mse.png", "图 3  各模型 MSE 均值与标准差对比")
     add_picture("results/figures/metric_bar_mae.png", "图 4  各模型 MAE 均值与标准差对比")
 
@@ -478,7 +500,7 @@ def build_report() -> None:
     add_picture("results/figures/report_dmsaformer_step_mae.png", "图 8  DMSAFormer 不同预测步长的 MAE 变化")
 
     heading(2, "4.6 预测曲线观察")
-    body("预测曲线对比显示，90 天任务中各模型总体趋势接近，但 DMSAFormer 借助验证集门控选择更适合当前 seed 的局部专家，在峰谷位置上更稳定。365 天任务中，长跨度预测更依赖低方差建模和趋势校准；LSTM 的顺序归纳偏置经过 validation affine 校准后显著降低系统性偏差。")
+    body("预测曲线对比图每个模型只显示一个代表 seed，避免 5 个 seed 全部叠加造成图例重复和曲线过密。90 天任务中各模型总体趋势接近，但 DMSAFormer 借助验证集门控选择更适合当前 seed 的局部专家，在峰谷位置上更稳定。365 天任务中，长跨度预测更依赖低方差建模和趋势校准；LSTM 的顺序归纳偏置经过 validation affine 校准后显著降低系统性偏差。")
     add_picture("results/figures/prediction_comparison_90.png", "图 9  90 天任务不同模型预测曲线对比")
     add_picture("results/figures/prediction_comparison_365.png", "图 10  365 天任务不同模型预测曲线对比")
     add_picture("figures/dmsaformer_90_prediction.png", "图 11  DMSAFormer 90 天预测与 Ground Truth 对比")
@@ -491,7 +513,7 @@ def build_report() -> None:
 
     heading(1, "5. 讨论", break_before=True)
     body("本项目的主要结论是：家庭电力消耗预测不能只依赖单一复杂模型。短期预测更需要捕捉局部波动和周期性，长期预测更需要低方差、趋势稳定和校准能力。DMSAFormer 的改进过程也表明，结构新颖性应服务于实际误差来源；当训练窗口极少时，盲目增加注意力或卷积分支并不一定提升泛化性能。")
-    body("最终 DMSAFormer 使用验证集校准专家机制，因此需要在报告中明确说明：它不是单一 checkpoint 的直接输出，而是一个由 DMSA 思路组织的校准专家模型。其关键约束是只用 validation 数据完成专家选择和 affine 校准，不使用 test 标签调参。这样既保持评估协议的严谨性，也使第三个模型在最终对比中达到用户要求的最优性能。")
+    body("最终 DMSAFormer 使用验证集校准专家机制，因此需要在报告中明确说明：它不是单一 checkpoint 的直接输出，而是一个由 DMSA 思路组织的校准专家模型。其关键约束是只用 validation 数据完成专家选择和 affine 校准，不使用 test 标签调参。这样既保持评估协议的严谨性，也使最终改进模型在四模型对比中达到最优性能。")
     body("当前工作的局限包括：天气变量是月度统计，无法完整反映日级温度、降雨和节假日因素；365 天预测训练窗口只有 78 个，长期趋势学习仍然存在不确定性；报告中的 GitHub 链接和作者贡献信息需要提交前由作者补齐。后续可以引入更细粒度天气数据、节假日特征、概率预测区间、异常用电检测，以及 Autoformer、FEDformer、PatchTST、iTransformer、TimesNet 等更专门的长序列预测模型。")
 
     heading(1, "6. 复现与提交说明", break_before=True)
@@ -507,6 +529,8 @@ def build_report() -> None:
         "UCI Machine Learning Repository. Individual household electric power consumption Data Set. https://archive.ics.uci.edu/dataset/235/individual+household+electric+power+consumption",
         "Hochreiter S., Schmidhuber J. Long short-term memory. Neural Computation, 1997, 9(8): 1735-1780.",
         "Vaswani A., Shazeer N., Parmar N., et al. Attention is all you need. Advances in Neural Information Processing Systems, 2017.",
+        "Bai S., Kolter J. Z., Koltun V. An empirical evaluation of generic convolutional and recurrent networks for sequence modeling. arXiv:1803.01271, 2018.",
+        "Zhou H., Zhang S., Peng J., et al. Informer: Beyond Efficient Transformer for Long Sequence Time-Series Forecasting. AAAI, 2021.",
         "Zeng A., Chen M., Zhang L., Xu Q. Are Transformers Effective for Time Series Forecasting? AAAI, 2023.",
         "Wu H., Xu J., Wang J., Long M. Autoformer: Decomposition Transformers with Auto-Correlation for Long-Term Series Forecasting. NeurIPS, 2021.",
         "Zhou T., Ma Z., Wen Q., et al. FEDformer: Frequency Enhanced Decomposed Transformer for Long-term Series Forecasting. ICML, 2022.",

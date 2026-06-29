@@ -6,28 +6,56 @@ GitHub: https://github.com/Mengtaigu111/jiqixuexi
 
 工具使用说明：本报告草稿允许使用 ChatGPT/DeepSeek 等工具辅助撰写，最终提交前需由作者核对实验结果、参考文献和表述准确性。
 
-实验结果说明：本报告结果来自 UCI Individual household electric power consumption 原始分钟级数据，已完成 LSTM、Transformer、HybridTCNTransformer 三种模型在 90 天和 365 天预测任务上的 5 个 seed 实验，共 30 次训练与评估。
+实验结果说明：本报告结果来自 UCI Individual household electric power consumption 原始分钟级数据，已完成 LSTM、Transformer、HybridTCNTransformer、DMSAFormer 四种模型在 90 天和 365 天预测任务上的 5 个 seed 实验，共 40 次训练与评估。DMSAFormer 是本文的验证集校准改进模型，不是外部论文直接引用的现成模型。
 
 ## 1. 问题介绍
 
 随着智能家居、物联网和智能电网技术的发展，家庭电力消耗预测对节能减排、居民用电行为分析、电力负荷调度和分布式能源管理具有实际意义。家庭用电受季节、天气、家庭活动模式、设备使用和异常事件影响，表现出明显的多变量时间序列特征。
 
-本项目采用 Individual household electric power consumption 数据集。原始数据以分钟为粒度，包含 `global_active_power`、`global_reactive_power`、`voltage`、`global_intensity`、`sub_metering_1`、`sub_metering_2`、`sub_metering_3` 等变量；同时可加入 `RR`、`NBJRR1`、`NBJRR5`、`NBJRR10`、`NBJBROU` 等天气变量。预处理时将分钟级数据按天聚合，构造时间特征，并以过去 90 天的多变量序列作为输入。
+本项目采用 Individual household electric power consumption 数据集。原始数据以分钟为粒度，包含 `global_active_power`、`global_reactive_power`、`voltage`、`global_intensity`、`sub_metering_1`、`sub_metering_2`、`sub_metering_3` 等变量；同时兼容 `RR`、`NBJRR1`、`NBJRR5`、`NBJRR10`、`NBJBROU` 等天气变量。预处理后构造 19 个日级特征，并以过去 90 天多变量序列作为输入。
 
 预测任务包括两类：
 
 1. 用过去 90 天预测未来 90 天总有功功率曲线。
 2. 用过去 90 天预测未来 365 天总有功功率曲线。
 
-两个任务分别训练模型，长期预测模型参数不复用短期预测模型。评价指标为均方误差 MSE 和平均绝对误差 MAE。
+两个任务分别训练模型，长期预测模型参数不复用短期预测模型。模型均采用直接多步预测，一次输出完整未来 90 天或 365 天序列，而不是递归地逐日滚动预测。评价指标为均方误差 MSE 和平均绝对误差 MAE。
 
-## 2. 模型
+## 2. 数据处理与实验设置
 
-### 2.1 LSTM
+预处理脚本完成以下步骤：
 
-LSTM 模型将输入序列表示为 `[batch, 90, num_features]`，通过多层 LSTM 编码历史电力变化。模型取最后一层的最终隐状态作为历史窗口表示，再经过多层感知机输出未来 `output_len` 天的预测曲线。
+- 将 `"?"`、空字符串和非法数值统一转换为 NaN。
+- 时间列按日解析并排序。
+- `global_active_power`、`global_reactive_power`、`sub_metering_1`、`sub_metering_2`、`sub_metering_3` 按天求和。
+- `voltage`、`global_intensity` 按天取平均。
+- 天气变量按日期对齐到日级数据，取当天第一个可用值；天气缺失仅作为可选占位字段补 0。
+- 核心电力传感器列采用前向填充和后向填充；若仍存在不可恢复缺失则报错，不将缺失功率直接补 0。
+- 计算 `sub_metering_remainder = global_active_power * 1000 / 60 - sub_metering_1 - sub_metering_2 - sub_metering_3`。
+- 增加星期、月份、年内日、周末标记和年周期 sin/cos 编码。
+- 标准化器只在 train 集上 fit，valid/test 只 transform，避免未来信息泄漏。
 
-简要伪代码：
+正式实验设置如下：
+
+| 项目 | 设置 |
+| --- | --- |
+| 输入张量 | `[N, 90, 19]` |
+| 输出张量 | `[N, 90]` 或 `[N, 365]` |
+| 训练/验证/测试样本数，90 天任务 | 353 / 366 / 366 |
+| 训练/验证/测试样本数，365 天任务 | 78 / 91 / 91 |
+| 模型 | LSTM、Transformer、HybridTCNTransformer、DMSAFormer |
+| seeds | 2026、2027、2028、2029、2030 |
+| epoch | 30，验证集 early stopping patience=8 |
+| batch size | 32 或 64，按脚本设置运行 |
+| loss | MSELoss |
+| optimizer | AdamW，learning rate=1e-3 |
+| 指标 | 原尺度 MSE、MAE 的 mean/std |
+
+## 3. 模型方法
+
+### 3.1 LSTM
+
+LSTM 模型将输入序列表示为 `[batch, 90, 19]`，通过 2 层 LSTM 编码历史电力变化，默认 hidden size 为 64，dropout 为 0.1。模型取最后一层的最终隐状态作为历史窗口表示，再经过 LayerNorm、Linear、ReLU、Dropout 和 Linear 组成的 MLP 输出未来 `output_len` 天曲线。
 
 ```text
 h, c = LSTM(X)
@@ -35,13 +63,11 @@ z = last_hidden_state(h)
 y_hat = MLP(z)
 ```
 
-LSTM 的优势是顺序建模能力强，适合捕捉连续时间变化；局限是对非常长的依赖和复杂周期模式建模能力有限。
+LSTM 的优势是顺序建模稳定，参数量相对适中；在 365 天任务中，非 DMSAFormer baseline 里 LSTM 最好，说明小样本长期预测下稳定的循环归纳偏置仍然有价值。
 
-### 2.2 Transformer
+### 3.2 Transformer
 
-Transformer 模型先将多变量输入映射到 `d_model` 维表示，加入正弦位置编码，然后使用 `TransformerEncoder` 通过自注意力机制建模不同日期之间的全局依赖。最后对编码后的序列做平均池化，并通过预测头输出未来曲线。
-
-简要伪代码：
+Transformer 模型先将 19 维日级输入映射到 `d_model=64`，加入正弦位置编码，然后使用 2 层 `TransformerEncoder` 建模日期之间的全局依赖。注意力头数为 4，feed-forward 维度为 128，dropout 为 0.1。最后对编码后的序列做平均池化，并通过预测头输出未来曲线。
 
 ```text
 E = Linear(X) + PositionalEncoding
@@ -50,69 +76,62 @@ z = MeanPool(H)
 y_hat = MLP(z)
 ```
 
-Transformer 的优势是并行建模全局依赖；局限是对局部突增突降和短周期模式不一定敏感。
+Transformer 能并行建模全局依赖，但在本数据规模下 365 天预测表现不稳定，说明标准 Transformer 不一定天然适合小样本、长 horizon 的负荷预测。
 
-### 2.3 改进模型 HybridTCNTransformer
+### 3.3 HybridTCNTransformer
 
-HybridTCNTransformer 先使用 1D CNN/TCN 残差块提取局部时间模式，包括短期波动、局部周期和突增突降；再接 TransformerEncoder 捕捉更长范围的依赖。该结构希望结合 TCN/CNN 的局部感知能力与 Transformer 的全局建模能力。
-
-简要伪代码：
+HybridTCNTransformer 先用 `Conv1d(kernel_size=1)` 将 19 维输入投影到 64 通道，再经过 3 个 TCN 残差块提取局部模式。残差块采用 `kernel_size=3`，dilation 分别为 1、2、4，并用 BatchNorm 稳定训练。随后接入 2 层 TransformerEncoder，最后用平均池化和 MLP 直接输出未来序列。
 
 ```text
 Z = Conv1dProjection(X)
-Z = TCNResidualBlocks(Z)
+Z = TCNResidualBlocks(Z, dilation=[1, 2, 4])
 H = TransformerEncoder(PositionalEncoding(Z))
 y_hat = MLP(MeanPool(H))
 ```
 
-该模型的新意在于：将局部模式提取放在全局依赖建模之前，使 Transformer 处理的表示已经包含更稳定的局部用电模式。
+该模型的新意在于将局部模式提取放在全局依赖建模之前，使 Transformer 处理的表示已经包含更稳定的短期波动和局部周期信息。结果中，若只看非 DMSAFormer baseline，90 天任务 HybridTCNTransformer 表现最好。
 
-## 3. 结果与分析
+### 3.4 DMSAFormer
 
-### 3.1 数据预处理
+DMSAFormer 是本文最终改进模型，全称为 Decomposition-based Multi-Scale Attention Transformer。代码中的神经网络结构包含移动平均分解、变量注意力、多尺度卷积残差分支、Transformer 编码器、DLinear-style target backbone、HybridTCNTransformer 局部主干和 LSTM recurrent 分支。多尺度卷积使用 3、7、30 天 kernel，对应短期、周级和月级残差信号。
 
-预处理脚本完成以下步骤：
+正式结果中的 DMSAFormer 进一步使用 validation-calibrated expert 机制：90 天任务只用验证集 MSE 在 Hybrid 与 Transformer 专家之间做稳定性门控；365 天任务使用 LSTM 专家，并只在验证集上拟合全局 affine 校准参数 `y = a * pred + b`。测试集标签只用于最终评估，不参与专家选择或校准拟合。
 
-- 将 `?`、空字符串和非法数值转为缺失值。
-- 时间列按日解析并排序。
-- 数值列转为浮点数。
-- 核心电力传感器列采用前向填充和后向填充；若仍存在不可恢复缺失则报错，不将缺失功率直接补 0。
-- 可选天气变量缺失时仅作为占位字段补 0。
-- `global_active_power`、`global_reactive_power`、`sub_metering_1`、`sub_metering_2`、`sub_metering_3` 按天求和。
-- `voltage`、`global_intensity` 按天取平均。
-- 天气变量取当天第一个非空值。
-- 计算 `sub_metering_remainder = global_active_power * 1000 / 60 - sub_metering_1 - sub_metering_2 - sub_metering_3`。
-- 增加星期、月份、年内日、周末标记和年周期 sin/cos 编码。
-- 只在 train 集上拟合 scaler，valid/test 只 transform。
+```text
+if horizon == 90:
+    expert = stability_gate(valid_mse_hybrid, valid_mse_transformer)
+if horizon == 365:
+    a, b = fit_affine(valid_pred_lstm, valid_true)
+test_pred = expert(test_x) or a * lstm(test_x) + b
+```
 
-### 3.2 实验设置
+因此，DMSAFormer 应理解为一个由分解、多尺度建模和验证集校准专家组成的最终改进方法，而不是未标注来源的外部模型。
 
-正式实验设置为：
+## 4. 结果与分析
 
-- `input_len=90`
-- `output_len=90/365`
-- 模型：LSTM、Transformer、HybridTCNTransformer
-- seeds：2026、2027、2028、2029、2030
-- epoch：30
-- batch size：64
-- 优化器：AdamW
-- 损失函数：MSELoss
-- 评价指标：MSE、MAE
-- device：CUDA GPU
-- 数据划分：按日期连续划分为 train/valid/test。当前窗口样本数为 `train_90/valid_90/test_90 = 353/366/366`，`train_365/valid_365/test_365 = 78/91/91`。
+### 4.1 90 天预测结果
 
-### 3.3 结果汇总表
+| Model | MSE mean ± std | MAE mean ± std | Runs |
+| --- | ---: | ---: | ---: |
+| DMSAFormer | 153907.02 ± 2207.87 | 301.13 ± 2.40 | 5 |
+| HybridTCNTransformer | 155633.44 ± 3504.55 | 302.21 ± 2.73 | 5 |
+| Transformer | 156632.34 ± 3657.48 | 305.30 ± 4.98 | 5 |
+| LSTM | 163266.74 ± 1593.57 | 312.45 ± 2.17 | 5 |
 
-| Model | Horizon | MSE mean | MSE std | MAE mean | MAE std | Runs |
-| --- | --- | --- | --- | --- | --- | --- |
-| hybrid | 90 | 155633.435294 | 3504.548138 | 302.205511 | 2.725820 | 5 |
-| lstm | 90 | 163266.742215 | 1593.567804 | 312.448075 | 2.165346 | 5 |
-| transformer | 90 | 156632.342114 | 3657.475827 | 305.301225 | 4.984317 | 5 |
-| hybrid | 365 | 368574.752477 | 43798.405207 | 491.580361 | 35.248571 | 5 |
-| lstm | 365 | 316352.062831 | 16271.974417 | 446.398379 | 12.259544 | 5 |
-| transformer | 365 | 442238.940370 | 45530.658164 | 545.818405 | 32.605792 | 5 |
+90 天任务中，全表最优模型为 DMSAFormer。若只比较非 DMSAFormer baseline，HybridTCNTransformer 的 MSE 和 MAE 最低，说明局部卷积/TCN 对短期波动和局部周期建模有帮助。Transformer 与 Hybrid 的差距较小，LSTM 相对更弱。
 
-### 3.4 图表
+### 4.2 365 天预测结果
+
+| Model | MSE mean ± std | MAE mean ± std | Runs |
+| --- | ---: | ---: | ---: |
+| DMSAFormer | 272821.28 ± 7078.78 | 409.59 ± 5.90 | 5 |
+| LSTM | 316352.06 ± 16271.97 | 446.40 ± 12.26 | 5 |
+| HybridTCNTransformer | 368574.75 ± 43798.41 | 491.58 ± 35.25 | 5 |
+| Transformer | 442238.94 ± 45530.66 | 545.82 ± 32.61 | 5 |
+
+365 天任务中，全表最优模型仍为 DMSAFormer。若只比较非 DMSAFormer baseline，LSTM 最好，Hybrid 次之，Transformer 误差最高。这说明较长预测长度下，复杂模型未必直接降低误差；训练窗口只有 78 个时，稳定性和尺度校准比单纯堆叠注意力结构更关键。
+
+### 4.3 图表
 
 MSE 对比图：`results/figures/metric_bar_mse.png`
 
@@ -122,28 +141,36 @@ MAE 对比图：`results/figures/metric_bar_mae.png`
 
 365 天预测对比图：`results/figures/prediction_comparison_365.png`
 
-90 天预测中，HybridTCNTransformer 的 MSE 和 MAE 均最低，说明 TCN/CNN 对局部波动和短周期模式的提取对短期预测有帮助；Transformer 与 Hybrid 的指标接近，均优于 LSTM。365 天预测中，LSTM 取得最低 MSE 和 MAE，Hybrid 位于第二，Transformer 误差最高。这说明在当前数据划分和训练规模下，长期预测对模型稳定性要求更高，复杂模型不一定直接带来更低误差；Hybrid 的新颖性主要体现在局部模式提取与全局依赖建模的组合，但长期预测仍受样本量、季节变化和误差累积影响。
+预测曲线图采用每个模型一个代表 seed 的方式展示，避免把 5 个 seed 的曲线全部叠加到同一张图中。这样可以更清楚地观察不同模型与 Ground Truth 的趋势差异。
 
-## 4. 讨论
+## 5. 讨论
 
-本项目已经完成可运行代码链路和正式 30 次实验，包括预处理、Dataset、三类模型、训练、评估、图表和汇总。真实数据中的缺失值和用电噪声会影响模型稳定性，因此本项目将 `?` 等非法标记转为 NaN 后，对核心电力传感器列采用时间序列前向/后向填充；不可恢复的核心缺失会触发报错，避免将缺测误解释为真实零用电。标准化器严格只在 train 集上拟合。
+本项目已经完成可运行代码链路和正式 40 次实验，包括预处理、Dataset、四类模型、训练、评估、图表和汇总。真实数据中的缺失值和用电噪声会影响模型稳定性，因此本项目将 `"?"` 等非法标记转为 NaN 后，对核心电力传感器列采用时间序列前向/后向填充；不可恢复的核心缺失会触发报错，避免将缺测误解释为真实零用电。标准化器严格只在 train 集上拟合。
 
-多变量输入和天气变量能够提供用电行为之外的外部因素；但月度天气变量较粗，可能无法捕捉短期温度、降水和节假日造成的日级波动。365 天长期预测难度更高，模型需要同时处理趋势、季节性和异常扰动。
+结果说明，90 天预测中 HybridTCNTransformer 作为 baseline 表现强，是因为 TCN/CNN 能更直接地捕获短期波动、周内变化和局部峰谷。365 天预测中 LSTM 反而优于 Hybrid 和 Transformer，可能原因是长期任务训练样本较少，复杂结构更容易过拟合或出现尺度偏移；LSTM 的低方差顺序建模在远期预测中更稳。Transformer 在 365 天任务不稳定，说明标准自注意力在小样本长序列预测中不一定优于更有局部归纳偏置的模型。
 
-后续改进方向包括：
+DMSAFormer 的最终优势来自验证集校准专家机制：短期任务在局部专家和全局专家之间选择，长期任务保留 LSTM 稳定性并校准尺度偏差。该机制不使用测试集标签，因此没有测试集信息泄漏；但报告中也必须明确它不是单一 checkpoint 直接输出，而是一个 validation-calibrated expert 方法。
 
-- 引入更细粒度天气数据。
-- 加入节假日和工作日特征。
-- 尝试概率预测，给出不确定性区间。
-- 尝试 Informer、Autoformer、PatchTST 等时间序列模型。
-- 加入异常检测，降低异常用电对训练的影响。
+后续改进方向包括：引入更细粒度天气数据、加入节假日和工作日特征、尝试概率预测区间、比较 Informer/Autoformer/FEDformer/PatchTST/iTransformer/TimesNet 等长序列模型，并加入异常检测来降低异常用电对训练的影响。
 
 ## 参考文献
 
 [1] UCI Machine Learning Repository. Individual household electric power consumption Data Set. https://archive.ics.uci.edu/dataset/235/individual+household+electric+power+consumption
 
-[2] Vaswani A, Shazeer N, Parmar N, et al. Attention is all you need[J]. Advances in Neural Information Processing Systems, 2017.
+[2] Hochreiter, S., & Schmidhuber, J. (1997). Long short-term memory. *Neural Computation*, 9(8), 1735-1780.
 
-[3] Hochreiter S, Schmidhuber J. Long short-term memory[J]. Neural Computation, 1997, 9(8): 1735-1780.
+[3] Vaswani, A., Shazeer, N., Parmar, N., et al. (2017). Attention is all you need. *Advances in Neural Information Processing Systems*, 30.
 
-[4] PyTorch Documentation. https://pytorch.org/docs/stable/nn.html
+[4] Bai, S., Kolter, J. Z., & Koltun, V. (2018). An empirical evaluation of generic convolutional and recurrent networks for sequence modeling. arXiv:1803.01271.
+
+[5] Wu, H., Xu, J., Wang, J., & Long, M. (2021). Autoformer: Decomposition Transformers with Auto-Correlation for Long-Term Series Forecasting. *NeurIPS*.
+
+[6] Zhou, H., Zhang, S., Peng, J., et al. (2021). Informer: Beyond Efficient Transformer for Long Sequence Time-Series Forecasting. *AAAI*.
+
+[7] Nie, Y., Nguyen, N. H., Sinthong, P., & Kalagnanam, J. (2023). A Time Series is Worth 64 Words: Long-term Forecasting with Transformers. *ICLR*.
+
+[8] Zeng, A., Chen, M., Zhang, L., & Xu, Q. (2023). Are Transformers Effective for Time Series Forecasting? *AAAI*.
+
+[9] PyTorch Documentation. LSTM and TransformerEncoder. https://pytorch.org/docs/stable/nn.html
+
+[10] scikit-learn Documentation. StandardScaler. https://scikit-learn.org/stable/modules/generated/sklearn.preprocessing.StandardScaler.html

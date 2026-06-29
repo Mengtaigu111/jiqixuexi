@@ -116,15 +116,27 @@ def _plot_prediction_comparison(
     allowed_models = _normalize_model_names(model_names)
     fig, ax = plt.subplots(figsize=(11, 4.8), dpi=160)
     plotted_truth = False
+    representatives: dict[str, tuple[int, Path]] = {}
     for path in sorted(predictions_dir.glob(f"*_{output_len}_seed*.csv")):
+        try:
+            head = pd.read_csv(path, nrows=1)
+        except Exception:
+            continue
+        if head.empty or "model" not in head.columns or "seed" not in head.columns:
+            continue
+        model = str(head["model"].iloc[0])
+        if allowed_models is not None and model not in allowed_models:
+            continue
+        seed = int(head["seed"].iloc[0])
+        if model not in representatives or seed < representatives[model][0]:
+            representatives[model] = (seed, path)
+
+    for model, (_, path) in sorted(representatives.items()):
         frame = pd.read_csv(path)
         if frame.empty:
             continue
         first_sample = frame[frame["sample_index"] == frame["sample_index"].min()]
         dates = pd.to_datetime(first_sample["date"])
-        model = str(first_sample["model"].iloc[0])
-        if allowed_models is not None and model not in allowed_models:
-            continue
         if not plotted_truth:
             ax.plot(dates, first_sample["y_true"], label="Ground Truth", linewidth=2.2, color="#333333")
             plotted_truth = True
