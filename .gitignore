@@ -18,5 +18,6 @@ __pycache__/
 .pytest_cache/
 .ipynb_checkpoints/
 logs/
+node_modules/
 *.pyc
 *.pyo

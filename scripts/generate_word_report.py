@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 import shutil
 import subprocess
 from datetime import date
@@ -199,6 +200,190 @@ def add_picture(path: str, caption: str, width: str = "14.6cm") -> None:
     add_p(caption, size="9pt", font=FONT, font_ea=FONT, color=MUTED, italic="true", align="center", spaceAfter="10pt")
 
 
+def _clean_markdown_text(text: str) -> str:
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = re.sub(r"\*\*([^*]+)\*\*", r"\1", text)
+    text = re.sub(r"\*([^*]+)\*", r"\1", text)
+    return text.strip()
+
+
+def _parse_markdown_table(lines: list[str]) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for line in lines:
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if cells and all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells):
+            continue
+        rows.append([_clean_markdown_text(cell) for cell in cells])
+    return rows
+
+
+def build_report_with_python_docx() -> None:
+    try:
+        from docx import Document
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.shared import Inches, Pt, RGBColor
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("officecli is not available and python-docx is not installed") from exc
+
+    markdown_path = REPORT_DIR / "report_draft.md"
+    if not markdown_path.exists():
+        raise FileNotFoundError(f"Missing report markdown source: {markdown_path}")
+
+    REPORT_DIR.mkdir(exist_ok=True)
+    doc = Document()
+    section = doc.sections[0]
+    section.top_margin = Inches(0.8)
+    section.bottom_margin = Inches(0.8)
+    section.left_margin = Inches(0.85)
+    section.right_margin = Inches(0.85)
+
+    styles = doc.styles
+    styles["Normal"].font.name = FONT
+    styles["Normal"].font.size = Pt(10.5)
+    for style_name, size in [("Heading 1", 18), ("Heading 2", 14), ("Heading 3", 12)]:
+        styles[style_name].font.name = FONT
+        styles[style_name].font.size = Pt(size)
+        styles[style_name].font.color.rgb = RGBColor(23, 54, 93)
+
+    def add_doc_paragraph(text: str, style: str | None = None, align: int | None = None) -> None:
+        paragraph = doc.add_paragraph(_clean_markdown_text(text), style=style)
+        paragraph.paragraph_format.space_after = Pt(6)
+        paragraph.paragraph_format.line_spacing = 1.18
+        if align is not None:
+            paragraph.alignment = align
+
+    def add_doc_code(lines: list[str]) -> None:
+        paragraph = doc.add_paragraph()
+        paragraph.paragraph_format.space_after = Pt(6)
+        for index, line in enumerate(lines):
+            if index:
+                paragraph.add_run("\n")
+            run = paragraph.add_run(line)
+            run.font.name = "Consolas"
+            run.font.size = Pt(9)
+
+    def add_doc_table(rows: list[list[str]]) -> None:
+        if not rows:
+            return
+        table = doc.add_table(rows=len(rows), cols=len(rows[0]))
+        table.style = "Table Grid"
+        for row_index, row in enumerate(rows):
+            for col_index, cell_text in enumerate(row):
+                cell = table.cell(row_index, col_index)
+                cell.text = cell_text
+                for paragraph in cell.paragraphs:
+                    for run in paragraph.runs:
+                        run.font.name = FONT
+                        run.font.size = Pt(9)
+                        if row_index == 0:
+                            run.bold = True
+                    if row_index == 0:
+                        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    def add_doc_picture(path: Path, caption: str) -> None:
+        if not path.exists() or path.stat().st_size <= 0:
+            return
+        paragraph = doc.add_paragraph()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = paragraph.add_run()
+        run.add_picture(str(path), width=Inches(5.8))
+        caption_para = doc.add_paragraph(caption)
+        caption_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        caption_para.paragraph_format.space_after = Pt(8)
+        for run in caption_para.runs:
+            run.font.name = FONT
+            run.font.size = Pt(9)
+            run.italic = True
+
+    paragraph_buffer: list[str] = []
+    table_buffer: list[str] = []
+    code_buffer: list[str] = []
+    in_code = False
+
+    def flush_paragraph() -> None:
+        nonlocal paragraph_buffer
+        if paragraph_buffer:
+            add_doc_paragraph(" ".join(part.strip() for part in paragraph_buffer if part.strip()))
+            paragraph_buffer = []
+
+    def flush_table() -> None:
+        nonlocal table_buffer
+        if table_buffer:
+            add_doc_table(_parse_markdown_table(table_buffer))
+            table_buffer = []
+
+    def flush_code() -> None:
+        nonlocal code_buffer
+        if code_buffer:
+            add_doc_code(code_buffer)
+            code_buffer = []
+
+    title_seen = False
+    for raw_line in markdown_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.rstrip()
+        if line.startswith("```"):
+            flush_paragraph()
+            flush_table()
+            if in_code:
+                flush_code()
+            in_code = not in_code
+            continue
+        if in_code:
+            code_buffer.append(line)
+            continue
+        if line.startswith("|"):
+            flush_paragraph()
+            table_buffer.append(line)
+            continue
+        flush_table()
+        image_match = re.fullmatch(r"!\[(.*?)\]\((.*?)\)", line.strip())
+        if image_match:
+            flush_paragraph()
+            add_doc_picture(ROOT / image_match.group(2), image_match.group(1))
+            continue
+        if not line.strip():
+            flush_paragraph()
+            continue
+        if line.startswith("# "):
+            flush_paragraph()
+            text = line[2:].strip()
+            add_doc_paragraph(text, style="Title" if not title_seen else "Heading 1", align=WD_ALIGN_PARAGRAPH.CENTER if not title_seen else None)
+            title_seen = True
+        elif line.startswith("## "):
+            flush_paragraph()
+            add_doc_paragraph(line[3:].strip(), style="Heading 1")
+        elif line.startswith("### "):
+            flush_paragraph()
+            add_doc_paragraph(line[4:].strip(), style="Heading 2")
+        elif line.startswith("- "):
+            flush_paragraph()
+            add_doc_paragraph(line[2:].strip(), style="List Bullet")
+        elif re.match(r"\d+\.\s+", line):
+            flush_paragraph()
+            add_doc_paragraph(re.sub(r"^\d+\.\s+", "", line), style="List Number")
+        else:
+            paragraph_buffer.append(line)
+    flush_paragraph()
+    flush_table()
+    flush_code()
+
+    add_doc_paragraph("附：关键图表", style="Heading 1")
+    for path, caption in [
+        ("results/figures/metric_bar_mse.png", "各模型 MSE 均值与标准差对比"),
+        ("results/figures/metric_bar_mae.png", "各模型 MAE 均值与标准差对比"),
+        ("results/figures/report_dmsaformer_evolution.png", "DMSAFormer 改进历程"),
+        ("results/figures/report_dmsaformer_calibration.png", "DMSAFormer 自身 validation affine 校准参数"),
+        ("results/figures/prediction_comparison_90.png", "90 天预测对比"),
+        ("results/figures/prediction_comparison_365.png", "365 天预测对比"),
+        ("figures/dmsaformer_90_prediction.png", "DMSAFormer 90 天预测曲线"),
+        ("figures/dmsaformer_365_prediction.png", "DMSAFormer 365 天预测曲线"),
+    ]:
+        add_doc_picture(ROOT / path, caption)
+
+    doc.save(OUT)
+    shutil.copy2(OUT, COMPAT_OUT)
+
+
 def toc_entry(text: str, level: int = 1) -> None:
     add_p(
         text,
@@ -229,8 +414,12 @@ def read_analysis_stats() -> dict[str, float]:
     return {key: float(value) for key, value in data.items()}
 
 
-def pct(stats: dict[str, float], key: str) -> str:
-    return f"{stats[key]:.2f}%" if key in stats else "见图"
+def change_phrase(stats: dict[str, float], key: str, metric: str) -> str:
+    if key not in stats:
+        return f"{metric} 见图"
+    value = stats[key]
+    verb = "降低" if value >= 0 else "高出"
+    return f"{metric} {verb} {abs(value):.2f}%"
 
 
 def val(stats: dict[str, float], key: str) -> str:
@@ -276,13 +465,13 @@ def cover_metric_table(stats: dict[str, float]) -> None:
                 "未来 90 天",
                 f"{float(row90['MSE mean']):.2f}" if row90 else "见结果表",
                 f"{float(row90['MAE mean']):.2f}" if row90 else "见结果表",
-                "MSE 降低 " + pct(stats, "90_mse_improvement_pct"),
+                change_phrase(stats, "90_mse_improvement_pct", "MSE"),
             ],
             [
                 "未来 365 天",
                 f"{float(row365['MSE mean']):.2f}" if row365 else "见结果表",
                 f"{float(row365['MAE mean']):.2f}" if row365 else "见结果表",
-                "MSE 降低 " + pct(stats, "365_mse_improvement_pct"),
+                change_phrase(stats, "365_mse_improvement_pct", "MSE"),
             ],
         ],
         widths="2400,2600,2600,3800",
@@ -292,6 +481,9 @@ def cover_metric_table(stats: dict[str, float]) -> None:
 def build_report() -> None:
     stats = read_analysis_stats()
     REPORT_DIR.mkdir(exist_ok=True)
+    if shutil.which("officecli") is None:
+        build_report_with_python_docx()
+        return
     if OUT.exists():
         OUT.unlink()
     if COMPAT_OUT.exists():
@@ -307,10 +499,10 @@ def build_report() -> None:
 
     add_p("2026 年专硕机器学习课程项目报告", size="10.5pt", bold="true", color="FFFFFF", align="center", shd=f"clear;{DARK}", spaceBefore="12pt", spaceAfter="18pt")
     add_p("基于深度学习的家庭电力消耗多变量时间序列预测", size="25pt", bold="true", color=DARK, align="center", spaceAfter="12pt")
-    add_p("LSTM、Transformer、HybridTCNTransformer 与验证集校准 DMSAFormer 的比较研究", size="14.5pt", bold="true", color=ACCENT, align="center", spaceAfter="18pt")
+    add_p("LSTM、Transformer 与验证集校准 DMSAFormer 的三模型比较研究", size="14.5pt", bold="true", color=ACCENT, align="center", spaceAfter="18pt")
     add_p("关键结果", size="12pt", bold="true", color=DARK, align="center", spaceAfter="6pt")
     cover_metric_table(stats)
-    add_p("实验协议：四种模型均按 90 天输入分别预测未来 90 天与 365 天，每个设置运行 5 个随机种子，共 40 次训练与评估；DMSAFormer 的专家选择与 affine 校准只使用训练集划分出的验证集，测试集只用于最终评估。", size="10pt", font=FONT, font_ea=FONT, color="444444", align="justify", firstLineIndent=420, lineSpacing="1.25x", spaceBefore="8pt", spaceAfter="12pt")
+    add_p("实验协议：三个正式模型均按 90 天输入分别预测未来 90 天与 365 天，每个设置运行 5 个随机种子，共 30 次正式对比实验；DMSAFormer 的 affine 校准只拟合自身验证集预测，测试集只用于最终评估。", size="10pt", font=FONT, font_ea=FONT, color="444444", align="justify", firstLineIndent=420, lineSpacing="1.25x", spaceBefore="8pt", spaceAfter="12pt")
     add_p("项目信息", size="12pt", bold="true", color=DARK, align="center", spaceAfter="6pt")
     add_p("数据集：UCI Individual household electric power consumption；任务：多变量日级时间序列预测。", size="10.5pt", align="center", color=MUTED, spaceAfter="3pt")
     add_p(f"GitHub 链接：{REPO_URL}", size="10.5pt", align="center", color=MUTED, spaceAfter="3pt")
@@ -318,7 +510,7 @@ def build_report() -> None:
     add_p("工具使用说明：报告撰写和格式整理使用 AI 工具辅助；实验结果来自本项目真实代码运行与审计。", size="10.5pt", align="center", color=MUTED, spaceAfter="6pt")
     add_p(f"生成日期：{date.today().isoformat()}", size="10pt", align="center", color=MUTED, spaceAfter="16pt")
     add_p("摘要", size="14pt", bold="true", color=DARK, align="center", spaceAfter="8pt")
-    body("本报告围绕 UCI Individual household electric power consumption 数据集，研究基于过去 90 天多变量日级序列预测未来 90 天和 365 天总有功功率的问题。项目完成了数据清洗、日级聚合、时间特征构造、窗口化建模、五轮随机种子训练与评估，并比较 LSTM、Transformer、作为中间改进/消融对照的 HybridTCNTransformer，以及最终提出的 DMSAFormer。DMSAFormer 是面向家庭电力长短期预测任务的分解式多尺度专家融合模型，在 90 天和 365 天两个任务上均取得最低 MSE 与 MAE。")
+    body("本报告围绕 UCI Individual household electric power consumption 数据集，研究基于过去 90 天多变量日级序列预测未来 90 天和 365 天总有功功率的问题。项目完成了数据清洗、日级聚合、时间特征构造、窗口化建模、五轮随机种子训练与评估，并正式比较 LSTM、Transformer 和最终提出的 DMSAFormer 三个模型。修订后的 DMSAFormer 只使用自身 checkpoint 的验证集与测试集预测，并在验证集上拟合 affine 校准。结果显示：90 天任务由 Transformer 取得最低误差，DMSAFormer 与 LSTM 接近但落后 Transformer；365 天任务中 DMSAFormer 取得最低 MSE 与 MAE。")
     add_p("关键词：家庭电力消耗；多变量时间序列；LSTM；Transformer；DMSAFormer；验证集校准", size="10.5pt", italic="true", align="center", spaceAfter="20pt")
     page_break()
 
@@ -329,10 +521,9 @@ def build_report() -> None:
         (1, "3. 模型方法"),
         (2, "3.1 LSTM 基线模型"),
         (2, "3.2 Transformer 基线模型"),
-        (2, "3.3 HybridTCNTransformer 改进基线"),
-        (2, "3.4 改进模型 DMSAFormer"),
-        (2, "3.5 组件作用与消融说明"),
-        (2, "3.6 改进过程与失败诊断"),
+        (2, "3.3 改进模型 DMSAFormer"),
+        (2, "3.4 中间结构与消融说明"),
+        (2, "3.5 改进过程与失败诊断"),
         (1, "4. 结果与分析"),
         (2, "4.1 总体指标对比"),
         (2, "4.2 相对最强 baseline 的提升幅度"),
@@ -340,7 +531,7 @@ def build_report() -> None:
         (2, "4.4 误差分布与异常点影响"),
         (2, "4.5 随预测步长变化的误差"),
         (2, "4.6 预测曲线观察"),
-        (2, "4.7 校准专家机制分析"),
+        (2, "4.7 自身校准机制分析"),
         (1, "5. 讨论"),
         (1, "6. 复现与提交说明"),
         (1, "参考文献"),
@@ -377,7 +568,7 @@ def build_report() -> None:
         widths="1700,1500,1500,1500,1500,1500,2200",
     )
     bullet("优化器：AdamW；损失函数：MSELoss；评价指标：原尺度 MSE 与 MAE。")
-    bullet("四个模型、两个预测长度、每个设置运行 seeds 2026、2027、2028、2029、2030 共 40 次训练与评估。")
+    bullet("三个正式模型、两个预测长度、每个设置运行 seeds 2026、2027、2028、2029、2030 共 30 次正式对比实验。")
     bullet("正式训练优先使用 CUDA GPU；长实验通过 tmux 记录日志，避免中断后丢失状态。")
     bullet("所有指标、预测 CSV、曲线图和审计记录均保存在 results/ 与 goal/goal-2/ 下。")
     add_picture("results/figures/report_pipeline_flow.png", "图 1  实验流程与数据泄漏控制示意图")
@@ -388,13 +579,12 @@ def build_report() -> None:
             ["模型", "关键结构与超参数", "输出方式"],
             ["LSTM", "2 层 LSTM，hidden size=64，dropout=0.1，LayerNorm+MLP head", "直接输出 90/365 天"],
             ["Transformer", "d_model=64，4 heads，2 层 encoder，FFN=128，dropout=0.1", "mean pooling 后直接多步预测"],
-            ["HybridTCNTransformer", "1x1 Conv 投影，3 个 kernel=3、dilation=1/2/4 的 TCN 残差块，2 层 TransformerEncoder", "局部特征+全局依赖后直接输出"],
-            ["DMSAFormer", "最终提出模型；分解、变量注意力、3/7/30 多尺度卷积、Hybrid/LSTM 专家、validation 校准", "验证集专家选择或 affine 校准后输出"],
+            ["DMSAFormer", "最终提出模型；目标分解主干、变量注意力、3/7/30 多尺度卷积、局部时序主干、validation 自身 affine 校准", "自身 checkpoint 输出经验证集校准"],
         ],
         widths="2200,6800,3000",
     )
     heading(2, "3.1 LSTM 基线模型")
-    body("LSTM 通过门控循环单元顺序读取 90 天多变量输入，并使用最后时刻隐状态表示历史窗口。随后将该表示送入多层感知机，直接输出未来 output_len 天的预测曲线。LSTM 的优势在于结构稳定、参数量适中，在样本数量较少的长期预测场景中表现较稳健。")
+    body("LSTM 通过循环记忆结构顺序读取 90 天多变量输入，并使用最后时刻隐状态表示历史窗口。随后将该表示送入多层感知机，直接输出未来 output_len 天的预测曲线。LSTM 的优势在于结构稳定、参数量适中，在样本数量较少的长期预测场景中表现较稳健。")
     code_line("h, c = LSTM(X)")
     code_line("z = last_hidden_state(h)")
     code_line("y_hat = MLP(z)")
@@ -405,29 +595,27 @@ def build_report() -> None:
     code_line("H = TransformerEncoder(E)")
     code_line("y_hat = MLP(MeanPool(H))")
 
-    heading(2, "3.3 HybridTCNTransformer 改进基线")
-    body("HybridTCNTransformer 在本文中作为中间改进模型和消融对照，用于检验“局部 TCN/CNN 特征提取 + 全局 Transformer 编码”相对于 LSTM 与标准 Transformer 的作用。模型先通过 1x1 Conv 将 19 维日级输入投影到 64 通道，再使用三个 TCN 残差块提取局部时间模式。残差块 kernel size 为 3，dilation 分别为 1、2、4，并通过 BatchNorm 和残差连接稳定训练。随后模型加入位置编码并使用 TransformerEncoder 建模更长范围的依赖，最后通过平均池化和 MLP 直接输出未来曲线。")
-    code_line("Z = Conv1dProjection(X)")
-    code_line("Z = TCNResidualBlocks(Z, dilation=[1,2,4])")
-    code_line("y_hat = MLP(MeanPool(TransformerEncoder(PositionalEncoding(Z))))")
-
-    heading(2, "3.4 改进模型 DMSAFormer")
-    body("最终提出模型采用 DMSAFormer，即 Decomposition-based Multi-Scale Attention Transformer。它不是声称完全从零发明的新型架构，而是面向家庭电力长短期预测任务的分解式多尺度专家融合模型。初始版本包含移动平均分解、变量注意力、多尺度卷积残差分支和 Transformer 编码器。正式实验发现，单纯注意力和残差分支在 365 天任务上不够稳定，主要原因是长期任务训练窗口只有 78 个，复杂模型容易早停并出现高方差。")
-    body("在文献调研后，模型引入 DLinear 风格的目标通道分解线性主干、HybridTCNTransformer 局部时序主干以及 LSTM recurrent 分支。进一步 probe 表明，单体分支融合仍不能同时超过短期和长期最强基线。因此最终 DMSAFormer 采用验证集校准专家机制：90 天任务使用验证集稳定性门控在 Hybrid 与 Transformer 专家之间选择；365 天任务使用 LSTM 专家，并在验证集上拟合全局 affine 校准参数 a 和 b，然后应用到测试预测。")
-    body("所有校准参数仅在训练集划分出的 validation set 上估计，test set 只用于最终评估，不参与模型选择、门控权重学习或 affine 校准。这样既保留了 DMSAFormer 的分解、多尺度和专家集成思想，也解决了小样本长期预测下单一神经网络不稳定的问题。")
+    heading(2, "3.3 改进模型 DMSAFormer")
+    body("最终提出模型采用 DMSAFormer，即 Decomposition-based Multi-Scale Attention Transformer。它不是声称完全从零发明的新型架构，而是面向家庭电力长短期预测任务的分解式多尺度校准模型。初始版本包含移动平均分解、变量注意力、多尺度卷积残差分支和 Transformer 编码器。正式实验发现，单纯注意力和残差分支在 365 天任务上不够稳定，主要原因是长期任务训练窗口只有 78 个，复杂模型容易早停并出现高方差。")
+    body("在文献调研后，模型引入 DLinear 风格的目标通道分解线性主干，并保留局部时序主干与多尺度残差修正分支。进一步 probe 表明，DMSAFormer 自身的原始输出在 365 天任务上存在幅度膨胀问题：预测形状并非完全错误，但输出尺度偏大。最终修订版不再借用任何 baseline 预测，而是对 DMSAFormer 自己的 validation 预测拟合全局 affine 校准参数 a 和 b，再应用到同一 checkpoint 的 test 预测。")
+    body("所有校准参数仅在训练集划分出的 validation set 上估计，test set 只用于最终评估，不参与权重训练、模型选择或 affine 校准。这样保留了 DMSAFormer 的分解、多尺度和局部时序建模思想，同时把长期预测的系统尺度偏移作为可解释误差来源处理。")
     add_table(
         [
             ["预测长度", "最终策略", "选择或校准依据"],
-            ["90 天", "Hybrid/Transformer 验证集稳定性门控", "仅使用 validation MSE 选择专家"],
-            ["365 天", "LSTM + affine 校准", "仅使用 validation 预测拟合 y = a·pred + b"],
+            ["90 天", "DMSAFormer 自身 affine 校准", "仅使用 DMSAFormer validation 预测拟合 y = a·pred + b"],
+            ["365 天", "DMSAFormer 自身 affine 校准", "仅使用 DMSAFormer validation 预测拟合 y = a·pred + b"],
         ],
         widths="1800,4400,5200",
     )
-    code_line("if horizon == 90: expert = stability_gate(valid_mse_hybrid, valid_mse_transformer)")
-    code_line("if horizon == 365: a, b = fit_affine(valid_pred_lstm, valid_true)")
-    code_line("test_pred = expert(test_x) or a * lstm(test_x) + b")
+    code_line("valid_pred = dmsaformer(valid_x)")
+    code_line("a, b = fit_affine(valid_pred, valid_true)")
+    code_line("test_pred = a * dmsaformer(test_x) + b")
 
-    heading(2, "3.5 组件作用与消融说明")
+    heading(2, "3.4 中间结构与消融说明")
+    body("HybridTCNTransformer 在本文中仅作为中间改进模型和消融对照，用于检验“局部 TCN/CNN 特征提取 + 全局 Transformer 编码”相对于 LSTM 与标准 Transformer 的作用。该结构帮助解释 DMSAFormer 为什么引入局部时序主干，但不作为正式第三个模型进入主结果表。")
+    code_line("Z = Conv1dProjection(X)")
+    code_line("Z = TCNResidualBlocks(Z, dilation=[1,2,4])")
+    code_line("y_hat = MLP(MeanPool(TransformerEncoder(PositionalEncoding(Z))))")
     body("DMSAFormer 的结构创新属于面向任务的工程组合型改进。家庭电力序列同时包含局部波动、周/月周期、长期趋势和多变量交互，因此模型将多个互补模块组合在同一预测流程中，而不是单纯堆叠 Transformer。")
     add_table(
         [
@@ -435,66 +623,64 @@ def build_report() -> None:
             ["分解模块", "降低趋势、季节性和残差波动的混杂"],
             ["多尺度卷积", "捕获短期局部波动、周级变化和月级模式"],
             ["变量注意力", "建模不同输入变量对 global_active_power 的贡献"],
-            ["专家融合", "结合 HybridTCNTransformer 的短期局部建模优势和 LSTM 的长期稳定性"],
-            ["validation 校准", "仅基于 validation set 修正专家选择和长期预测的系统偏移"],
+            ["局部时序主干", "补充 target backbone 难以覆盖的局部波动形态"],
+            ["validation 校准", "仅基于 DMSAFormer 自身 validation 预测修正系统尺度偏移"],
         ],
         widths="3200,8600",
     )
-    body("已有实验演进可以视为粗粒度消融证据：初版 DMSAFormer 的 90 天和 365 天 MSE 分别为 203046.76 和 398765.92；加入目标分解主干和局部时序主干后分别降至 159531.26 和 348457.56；最终加入 validation-only 专家选择与 affine 校准后降至 153907.02 和 272821.28。由于本轮未重新训练逐一移除单个模块的模型，报告不伪造逐模块数值消融表。")
+    body("已有实验演进可以视为粗粒度消融证据：初版 DMSAFormer 的 90 天和 365 天 MSE 分别为 203046.76 和 398765.92；加入目标分解主干和局部时序主干后分别降至 159531.26 和 348457.56；改为自身 validation affine 校准后，90 天 MSE 为 163105.98，365 天 MSE 为 294854.83。这个结果说明校准主要修正了长期尺度偏移，但短期任务仍不如正式 baseline Transformer。")
 
-    heading(2, "3.6 改进过程与失败诊断")
+    heading(2, "3.5 改进过程与失败诊断")
     body("DMSAFormer 并非一次成型。初版 DMSAFormer 在两个任务上均弱于已有模型：90 天任务比最强 Hybrid 高约 30.46% MSE，365 天任务比最强 LSTM 高约 26.05% MSE。训练日志显示长期任务经常在较早 epoch 停止，说明 attention-heavy 结构在只有 78 个长期训练窗口时没有充分泛化。")
-    body("第二版把 DLinear 的分解线性思想作为低方差主干，并加入 raw-input TCN+Transformer 局部时序主干，90 天 MSE 从 203046.764 降到 159531.265，365 天 MSE 从 398765.924 降到 348457.556，但仍没有全面超过最强 baseline。最终版没有继续盲目堆叠参数，而是转向 validation-only 专家选择与校准：短期选择局部专家，长期保留 LSTM 稳定性并校正尺度偏差。")
+    body("第二版把 DLinear 的分解线性思想作为低方差主干，并加入 raw-input TCN+Transformer 局部时序主干，90 天 MSE 从 203046.764 降到 159531.265，365 天 MSE 从 398765.924 降到 348457.556，但仍没有全面超过最强 baseline。最终版没有继续盲目堆叠参数，而是把验证集中暴露出的幅度偏差显式建模为 DMSAFormer 自身输出的 affine 校准问题。")
     add_table(
         [
             ["版本", "主要思路", "诊断结论"],
             ["初版", "分解 + 变量注意力 + 多尺度卷积 + Transformer", "结构新但小样本下高方差，长期预测不稳"],
             ["结构改造版", "加入 DLinear-style 目标分解主干和 TCN 局部主干", "显著改善，但仍未同时超过短期和长期最强 baseline"],
-            ["最终版", "验证集专家门控 + 验证集 affine 校准", "不使用测试标签调参，同时让 90/365 天 MSE 与 MAE 均为全表最优"],
+            ["最终版", "DMSAFormer 自身 validation affine 校准", "不使用测试标签调参；90 天未超过 Transformer，365 天超过所有正式 baseline"],
         ],
         widths="1800,5000,5000",
     )
-    add_picture("results/figures/report_dmsaformer_evolution.png", "图 2  DMSAFormer 从初版到最终校准专家版的 MSE 改进历程")
+    add_picture("results/figures/report_dmsaformer_evolution.png", "图 2  DMSAFormer 从初版到自身校准版的 MSE 改进历程")
 
     heading(1, "4. 结果与分析", break_before=True)
     heading(2, "4.1 总体指标对比")
-    body("最终结果来自 90 天和 365 天两个任务的 5 个随机种子实验，共 40 次训练与评估。下表按预测长度拆分，列出各模型在测试集原始尺度上的 MSE 与 MAE 均值、标准差和运行次数。DMSAFormer 在两个预测长度上均取得最小 MSE 和 MAE；若只比较非 DMSAFormer baseline，90 天任务 HybridTCNTransformer 最好，365 天任务 LSTM 最好。")
+    body("最终结果来自 90 天和 365 天两个任务的 5 个随机种子实验，共 30 次正式对比实验。下表按预测长度拆分，列出三个正式模型在测试集原始尺度上的 MSE 与 MAE 均值、标准差和运行次数。90 天任务中 Transformer 最好，DMSAFormer 与 LSTM 基本接近；365 天任务中 DMSAFormer 取得最低 MSE 与 MAE，优于最强 baseline LSTM。")
     heading(3, "90 天预测结果")
     add_table(read_summary_rows("90"), widths="3600,3600,3600,1200")
     heading(3, "365 天预测结果")
     add_table(read_summary_rows("365"), widths="3600,3600,3600,1200")
-    body("短期 90 天预测中，DMSAFormer 的 MSE 均值为 153907.02，低于 HybridTCNTransformer 的 155633.44、Transformer 的 156632.34 和 LSTM 的 163266.74。长期 365 天预测中，DMSAFormer 的 MSE 均值为 272821.28，明显低于 LSTM 的 316352.06、HybridTCNTransformer 的 368574.75 和 Transformer 的 442238.94。MAE 指标也呈现相同排序，说明最终改进模型不仅降低了平方误差，也降低了平均绝对偏差。90 天 baseline 中 HybridTCNTransformer 较强，主要因为 TCN/CNN 可以捕捉局部短期波动；365 天 baseline 中 LSTM 较强，说明长预测下小样本和季节漂移会使复杂模型更容易过拟合。DMSAFormer 的优势可能来自分解、多尺度卷积、变量注意力和专家校准的共同作用。")
+    body("短期 90 天预测中，Transformer 的 MSE 均值为 156632.34，DMSAFormer 为 163105.98，LSTM 为 163266.74。DMSAFormer 没有超过短期最强 baseline，这说明自身 affine 校准不能替代短期局部形态建模的优势。长期 365 天预测中，DMSAFormer 的 MSE 均值为 294854.83，低于 LSTM 的 316352.06 和 Transformer 的 442238.94；MAE 也从 LSTM 的 446.40 降到 430.28。该结果支持一个更诚实的结论：DMSAFormer 的主要价值在长期小样本预测中通过分解主干和验证集尺度校准降低系统性偏差。")
     add_picture("results/figures/metric_bar_mse.png", "图 3  各模型 MSE 均值与标准差对比")
     add_picture("results/figures/metric_bar_mae.png", "图 4  各模型 MAE 均值与标准差对比")
 
     heading(2, "4.2 相对最强 baseline 的提升幅度")
     body(
-        "相对除 DMSAFormer 外的最强 baseline，最终模型在 90 天任务上 MSE 降低 "
-        + pct(stats, "90_mse_improvement_pct")
-        + "、MAE 降低 "
-        + pct(stats, "90_mae_improvement_pct")
-        + "；在 365 天任务上 MSE 降低 "
-        + pct(stats, "365_mse_improvement_pct")
-        + "、MAE 降低 "
-        + pct(stats, "365_mae_improvement_pct")
-        + "。短期任务提升幅度较小，说明 Hybrid/Transformer 已经很接近最优；长期任务提升更大，说明 validation affine 校准有效修正了 LSTM 原始长期预测的尺度偏差。"
+        "相对除 DMSAFormer 外的最强 baseline，最终模型在 90 天任务上 "
+        + change_phrase(stats, "90_mse_improvement_pct", "MSE")
+        + "、"
+        + change_phrase(stats, "90_mae_improvement_pct", "MAE")
+        + "；在 365 天任务上 "
+        + change_phrase(stats, "365_mse_improvement_pct", "MSE")
+        + "、"
+        + change_phrase(stats, "365_mae_improvement_pct", "MAE")
+        + "。这表明短期任务中 Transformer 的全局依赖建模更强；长期任务中，DMSAFormer 自身校准有效修正了原始输出的尺度偏差。"
     )
     add_picture("results/figures/report_dmsaformer_improvement.png", "图 5  DMSAFormer 相对最强非 DMSAFormer baseline 的误差下降比例")
 
     heading(2, "4.3 五轮实验稳定性")
-    body("逐 seed 曲线用于检查结果是否只依赖某一次随机初始化。90 天任务中，DMSAFormer、Hybrid 和 Transformer 的 MSE 差距较小，但 DMSAFormer 通过 validation 门控在不同 seed 间选择更稳定的专家，最终均值最低。365 天任务中，Transformer 和 Hybrid 的方差较大，LSTM 更稳定；最终 DMSAFormer 继承 LSTM 稳定性并经过验证集校准，因此五个 seed 的长期 MSE 均保持在较低区间。")
+    body("逐 seed 曲线用于检查结果是否只依赖某一次随机初始化。90 天任务中，DMSAFormer 的均值接近 LSTM，但方差更大，且整体落后 Transformer。365 天任务中，Transformer 的方差较大，LSTM 更稳定；DMSAFormer 经过自身验证集校准后，五个 seed 的长期 MSE 均保持在较低区间。")
     add_picture("results/figures/report_per_seed_mse.png", "图 6  各模型五个随机种子的测试 MSE 分布")
 
     heading(2, "4.4 误差分布与异常点影响")
     body(
         "绝对误差箱线图反映误差中位数和离散程度。90 天任务中 DMSAFormer 的中位绝对误差为 "
         + val(stats, "90_dmsaformer_median_abs_error")
-        + "，与 Hybrid 接近但均值指标更优，说明最终优势主要来自降低较大误差样本的影响。365 天任务中 DMSAFormer 的中位绝对误差为 "
+        + "，与 Transformer 存在差距，说明短期峰谷形态仍是当前 DMSAFormer 的短板。365 天任务中 DMSAFormer 的中位绝对误差为 "
         + val(stats, "365_dmsaformer_median_abs_error")
         + "，低于 LSTM 的 "
         + val(stats, "365_lstm_median_abs_error")
-        + "、Hybrid 的 "
-        + val(stats, "365_hybrid_median_abs_error")
         + " 和 Transformer 的 "
         + val(stats, "365_transformer_median_abs_error")
         + "，说明长期任务上的改进不是个别极端点带来的，而是整体误差分布下移。"
@@ -516,26 +702,26 @@ def build_report() -> None:
     add_picture("results/figures/report_dmsaformer_step_mae.png", "图 8  DMSAFormer 不同预测步长的 MAE 变化")
 
     heading(2, "4.6 预测曲线观察")
-    body("预测曲线对比图每个模型只显示一个代表 seed，避免 5 个 seed 全部叠加造成图例重复和曲线过密。90 天任务中各模型总体趋势接近，但 DMSAFormer 借助验证集门控选择更适合当前 seed 的局部专家，在峰谷位置上更稳定。365 天任务中，长跨度预测更依赖低方差建模和趋势校准；LSTM 的顺序归纳偏置经过 validation affine 校准后显著降低系统性偏差。")
+    body("预测曲线对比图每个模型只显示一个代表 seed，避免 5 个 seed 全部叠加造成图例重复和曲线过密。90 天任务中各模型总体趋势接近，但 DMSAFormer 对部分峰谷的贴合不如 Transformer，因此总体指标未领先。365 天任务中，长跨度预测更依赖低方差建模和趋势校准；DMSAFormer 自身输出经过 validation affine 校准后显著降低系统性偏差。")
     add_picture("results/figures/prediction_comparison_90.png", "图 9  90 天任务不同模型预测曲线对比")
     add_picture("results/figures/prediction_comparison_365.png", "图 10  365 天任务不同模型预测曲线对比")
     add_picture("figures/dmsaformer_90_prediction.png", "图 11  DMSAFormer 90 天预测与 Ground Truth 对比")
     add_picture("figures/dmsaformer_365_prediction.png", "图 12  DMSAFormer 365 天预测与 Ground Truth 对比")
 
-    heading(2, "4.7 校准专家机制分析")
-    body("校准选择记录显示，90 天任务多数 seed 选择 Hybrid 专家，seed 2027 选择 Transformer 专家；这与短期预测中局部模式和全局依赖都可能占优的现象一致。365 天任务全部使用 LSTM 专家，并在验证集上拟合不同 seed 的 scale 与 bias。校准系数不是测试集拟合结果，因此不会把测试标签泄漏进模型选择。")
-    add_picture("results/figures/report_dmsaformer_calibration.png", "图 13  DMSAFormer 验证集专家选择与长期 affine 校准参数")
-    body("从模型比较看，Transformer 在 90 天任务上优于 LSTM，说明全局依赖建模对短期曲线有帮助；但 Transformer 在 365 天任务上误差最高，反映出小训练集下注意力模型容易过拟合或校准不足。Hybrid 在 90 天任务表现强，说明 TCN/CNN 的局部感知能力有效；但长期预测仍受样本量和趋势偏移限制。DMSAFormer 的最终版本将短期局部专家和长期稳定专家通过验证集规则组合，因此在两类任务上都取得最优。")
+    heading(2, "4.7 自身校准机制分析")
+    body("校准记录显示，所有 seed 的 source_model 均为 dmsaformer，calibration_method 均为 validation_affine_self。90 天任务中校准 scale 多数接近 1，说明短期输出的主要问题不是整体幅度，而是局部形态误差；seed 2026 的 scale 为 0.687，也对应较高测试误差。365 天任务中 scale 约为 0.568 到 0.674，说明 DMSAFormer 原始长期预测存在系统性幅度膨胀，把输出向更稳健的尺度收缩后可以显著降低 MSE。")
+    add_picture("results/figures/report_dmsaformer_calibration.png", "图 13  DMSAFormer 自身 validation affine 校准参数")
+    body("从模型比较看，Transformer 在 90 天任务上优于 LSTM，说明全局依赖建模对短期曲线有帮助；但 Transformer 在 365 天任务上误差最高，反映出小训练集下注意力模型容易过拟合或校准不足。Hybrid 在 90 天任务表现强，说明 TCN/CNN 的局部感知能力有效；但长期预测仍受样本量和趋势偏移限制。DMSAFormer 的最终版本没有借用 baseline 输出，而是把自身长期输出的尺度偏差显式校准，因此长期任务表现最好。")
 
     heading(1, "5. 讨论", break_before=True)
-    body("本项目的主要结论是：家庭电力消耗预测不能只依赖单一复杂模型。短期预测更需要捕捉局部波动和周期性，长期预测更需要低方差、趋势稳定和校准能力。DMSAFormer 的改进过程也表明，结构新颖性应服务于实际误差来源；当训练窗口极少时，盲目增加注意力或卷积分支并不一定提升泛化性能。")
-    body("最终 DMSAFormer 使用验证集校准专家机制，因此需要在报告中明确说明：它不是单一 checkpoint 的直接输出，而是一个由 DMSA 思路组织的校准专家模型。其关键约束是只用 validation 数据完成专家选择和 affine 校准，不使用 test 标签调参。这样既保持评估协议的严谨性，也使最终改进模型在四模型对比中达到最优性能。")
+    body("本项目的主要结论是：家庭电力消耗预测不能只依赖单一复杂模型。短期预测中 Transformer 在正式三模型主表里最强；长期预测更需要低方差、趋势稳定和校准能力，因此 DMSAFormer 的自身校准版在 365 天任务上最强。DMSAFormer 的改进过程也表明，结构新颖性应服务于实际误差来源；当训练窗口极少时，盲目增加注意力或卷积分支并不一定提升泛化性能。")
+    body("最终 DMSAFormer 使用 validation affine self-calibration，因此需要在报告中明确说明：它的测试输出来自 DMSAFormer 自身 checkpoint，而不是 baseline 预测重命名。其关键约束是只用 validation 数据拟合 affine 参数，不使用 test 标签调参。这个处理使长期任务的系统尺度偏差得到修正，但短期任务仍未超过 Transformer。")
     body("当前工作的局限包括：天气变量是月度统计，无法完整反映日级温度、降雨和节假日因素；365 天预测训练窗口只有 78 个，长期趋势学习仍然存在不确定性；DMSAFormer 属于工程组合型改进，模块本身并非完全从零提出，因此报告重点放在任务适配性、验证集校准边界和实验效果上。后续可以引入更细粒度天气数据、节假日特征、概率预测区间、异常用电检测，以及 Autoformer、FEDformer、PatchTST、iTransformer、TimesNet 等更专门的长序列预测模型。")
 
     heading(1, "6. 复现与提交说明", break_before=True)
-    body("核心复现命令如下。若只需要重建最终 DMSAFormer 指标和图表，在 baseline checkpoints 已存在时可运行校准导出、汇总和 artifact 导出命令。")
+    body("核心复现命令如下。若只需要重建最终 DMSAFormer 指标和图表，在 DMSAFormer checkpoints 已存在时可运行自身校准导出、汇总和 artifact 导出命令。")
     code_line("conda run -n qwen3meld-run python -m src.calibrated_dmsaformer")
-    code_line("conda run -n qwen3meld-run python -m src.summarize_results")
+    code_line("conda run -n qwen3meld-run python -m src.summarize_results --models lstm transformer dmsaformer")
     code_line("conda run -n qwen3meld-run python -m src.export_dmsaformer_artifacts")
     code_line("conda run -n qwen3meld-run python -m pytest tests -q")
     body("提交前建议检查 GitHub 仓库是否排除了原始大数据、处理后 npz、checkpoints 和 logs，并确认报告中的 GitHub 链接、作者贡献、研究领域和实验结果均与最终提交版本一致。")

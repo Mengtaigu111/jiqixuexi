@@ -1,6 +1,8 @@
 # 基于深度学习的家庭电力消耗多变量时间序列预测
 
-本项目用于 2026 年专硕机器学习课程项目：使用家庭电力消耗多变量时间序列，根据过去 90 天数据分别预测未来 90 天和 365 天 `global_active_power` 曲线。最终报告比较 LSTM、Transformer、作为中间改进/消融对照的 HybridTCNTransformer，以及最终提出的 validation-calibrated DMSAFormer，共 2 个预测长度 x 5 个 seed x 4 个模型 = 40 次训练与评估。
+本项目用于 2026 年专硕机器学习课程项目：使用家庭电力消耗多变量时间序列，根据过去 90 天数据分别预测未来 90 天和 365 天 `global_active_power` 曲线。最终报告正式比较 LSTM、Transformer 和 DMSAFormer 三个模型。三模型在 2 个预测长度 x 5 个 seed 上训练与评估，共 30 次正式对比实验；HybridTCNTransformer 仅作为 DMSAFormer 改进过程中的中间结构/消融对照，不进入主结果表。
+
+**正式主表口径**：三个模型全部报告未经任何后处理的原始 test MSE/MAE，确保完全对称的公平对比。结果如实报告：90 天最优模型是 Transformer，365 天最优模型是 LSTM，本文提出的 DMSAFormer 在两个 horizon 上都居中、未超过最强 baseline。作为附加消融，`src/fair_comparison.py` 对三个模型施加同一套 validation-only 仿射校准（`y = a * pred + b`，仅在 valid 上拟合、不接触 test 标签），结果表明校准可小幅降低误差但不改变模型排名。
 
 ## 数据来源
 
@@ -76,12 +78,13 @@ python -m src.data_preprocess --data_dir data/raw --output_dir data/processed --
 python -m src.train --model lstm --output_len 90 --seed 2026 --epochs 30 --device auto
 ```
 
-最终报告支持模型：
+正式报告支持模型：
 
 - `lstm`
 - `transformer`
-- `hybrid`
 - `dmsaformer`
+
+`hybrid` 代码仍保留用于内部消融和 DMSAFormer 局部时序主干探索，但不是正式第三个提交模型。
 
 支持预测长度：
 
@@ -109,7 +112,7 @@ python -m src.evaluate \
 
 ## 复现实验
 
-baseline 完整实验共 3 个模型 x 2 个预测长度 x 5 个 seed：
+基础与中间改进实验脚本默认运行 LSTM、Transformer 和 HybridTCNTransformer。正式报告主表只采用 LSTM、Transformer 和 DMSAFormer；HybridTCNTransformer 结果只作为中间改进/消融记录使用。
 
 ```bash
 bash scripts/run_all_experiments.sh
@@ -134,22 +137,23 @@ watcher 日志写入 `logs/full_experiments_gpu_*.log`。默认每 300 秒检查
 
 ```bash
 PYTHON="conda run -n qwen3meld-run python" EPOCHS=1 SEEDS="2026" BATCH_SIZE=16 bash scripts/run_lstm_90.sh
-conda run -n qwen3meld-run python -m src.summarize_results --models lstm transformer hybrid
+conda run -n qwen3meld-run python -m src.summarize_results --models lstm transformer dmsaformer
 ```
 
-运行 DMSAFormer 并重新生成四模型最终结果：
+运行 DMSAFormer 并重新生成三模型正式结果：
 
 ```bash
 PYTHON="conda run -n qwen3meld-run python" EPOCHS=30 SEEDS="2026 2027 2028 2029 2030" BATCH_SIZE=32 bash scripts/run_dmsaformer_experiments.sh
 ```
 
-当前最终对比表使用 validation-calibrated DMSAFormer：90 天用验证集稳定性门控 Hybrid/Transformer 专家，365 天用验证集 affine 校准后的 LSTM 专家。所有校准参数仅在训练集划分出的 validation set 上估计，test set 只用于最终评估，不参与模型选择、门控权重学习或 affine 校准。若 baseline checkpoints 已存在，可直接重新导出最终最优 DMSAFormer 结果：
+正式主表对三个模型（LSTM、Transformer、DMSAFormer）统一采用未经任何后处理的原始 test MSE/MAE，三者完全站在同一起跑线上，不对任何单一模型施加额外校准。若 checkpoints 已存在，用 `src.fair_comparison` 直接重导三模型的 raw test 指标并刷新主表：
 
 ```bash
-conda run -n qwen3meld-run python -m src.calibrated_dmsaformer
-conda run -n qwen3meld-run python -m src.summarize_results
-conda run -n qwen3meld-run python -m src.export_dmsaformer_artifacts
+conda run -n qwen3meld-run python -m src.fair_comparison --write_raw_test_metrics
+conda run -n qwen3meld-run python -m src.summarize_results --models lstm transformer dmsaformer
 ```
+
+`src.fair_comparison` 还会额外输出一个校准消融：对三个模型施加完全相同的 validation-only 仿射校准 `y = a * pred + b`（a、b 只在 valid 预测上拟合，只应用于 test 预测，绝不接触 test 标签），结果写入 `results/metrics/fair_comparison_summary.csv`。该消融表明校准对三个模型都能小幅降低误差，但不改变模型间的相对排名。历史脚本 `src.calibrated_dmsaformer` 仅对 DMSAFormer 单独校准，会造成对比不对称，已不再用于生成主表：
 
 DMSAFormer 单次实验示例：
 
@@ -171,7 +175,7 @@ python run_experiments.py
 汇总命令：
 
 ```bash
-python -m src.summarize_results
+python -m src.summarize_results --models lstm transformer dmsaformer
 ```
 
 输出：
@@ -184,4 +188,4 @@ python -m src.summarize_results
 - `results/figures/prediction_comparison_365.png`
 - `results/screenshots/`
 
-最终报告使用不带 `--models` 的汇总结果，`summary.csv` 包含 LSTM、Transformer、HybridTCNTransformer、DMSAFormer 四个模型在两个预测长度上的 MSE/MAE mean/std。若只需要三模型 baseline 汇总，可显式使用 `--models lstm transformer hybrid`。
+最终报告使用显式三模型过滤生成，`summary.csv` 包含 LSTM、Transformer、DMSAFormer 三个正式模型在两个预测长度上的 MSE/MAE mean/std。若需要查看 HybridTCNTransformer 的内部消融结果，可从 `results/metrics/hybrid_*_test_metrics.csv` 或另行运行 `python -m src.summarize_results --models lstm transformer hybrid dmsaformer` 查看，但不要把它放入正式主表。

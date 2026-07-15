@@ -16,16 +16,14 @@ ROOT = Path(__file__).resolve().parents[1]
 FIGURES = ROOT / "results" / "figures"
 METRICS = ROOT / "results" / "metrics"
 PREDICTIONS = ROOT / "results" / "predictions"
-MODELS = ["dmsaformer", "hybrid", "lstm", "transformer"]
+MODELS = ["dmsaformer", "lstm", "transformer"]
 DISPLAY = {
     "dmsaformer": "DMSAFormer",
-    "hybrid": "Hybrid",
     "lstm": "LSTM",
     "transformer": "Transformer",
 }
 COLORS = {
     "dmsaformer": "#1f77b4",
-    "hybrid": "#ff7f0e",
     "lstm": "#2ca02c",
     "transformer": "#9467bd",
 }
@@ -43,7 +41,7 @@ EVOLUTION_SUMMARIES = {
     / "dmsaformer_v2_before_calibration_20260623T122806Z"
     / "results_exports"
     / "summary.csv",
-    "最终校准专家版": ROOT / "results" / "summary.csv",
+    "自身校准版": ROOT / "results" / "summary.csv",
 }
 
 
@@ -184,26 +182,19 @@ def plot_step_mae(errors: pd.DataFrame) -> dict[str, float]:
 def plot_calibration_choices() -> None:
     choices = pd.read_csv(METRICS / "dmsaformer_calibration_choices.csv")
     fig, axes = plt.subplots(2, 1, figsize=(9.5, 6.4), dpi=160)
-    short = choices[choices["horizon"] == 90].sort_values("seed")
-    source_codes = short["source_model"].map({"hybrid": 0, "transformer": 1}).to_numpy()
-    axes[0].bar(short["seed"].astype(str), source_codes, color=[COLORS[m] for m in short["source_model"]])
-    axes[0].set_yticks([0, 1], ["Hybrid", "Transformer"])
-    axes[0].set_title("90-day DMSAFormer validation-gated expert choice")
-    axes[0].set_xlabel("Seed")
-    axes[0].grid(axis="y", alpha=0.2)
-
-    long = choices[choices["horizon"] == 365].sort_values("seed")
-    ax2 = axes[1]
-    ax2.plot(long["seed"].astype(str), long["calibration_scale"], marker="o", label="scale a", color="#08519c")
-    ax2.set_ylabel("scale a")
-    ax2.grid(alpha=0.25)
-    twin = ax2.twinx()
-    twin.plot(long["seed"].astype(str), long["calibration_bias"], marker="s", label="bias b", color="#b23a48")
-    twin.set_ylabel("bias b")
-    ax2.set_title("365-day LSTM affine calibration fitted on validation predictions")
-    lines, labels = ax2.get_legend_handles_labels()
-    lines2, labels2 = twin.get_legend_handles_labels()
-    ax2.legend(lines + lines2, labels + labels2, loc="best", fontsize=8)
+    for ax, horizon in zip(axes, [90, 365], strict=True):
+        subset = choices[choices["horizon"] == horizon].sort_values("seed")
+        ax.plot(subset["seed"].astype(str), subset["calibration_scale"], marker="o", label="scale a", color="#08519c")
+        ax.set_ylabel("scale a")
+        ax.grid(alpha=0.25)
+        twin = ax.twinx()
+        twin.plot(subset["seed"].astype(str), subset["calibration_bias"], marker="s", label="bias b", color="#b23a48")
+        twin.set_ylabel("bias b")
+        ax.set_title(f"{horizon}-day DMSAFormer self affine calibration fitted on validation predictions")
+        ax.set_xlabel("Seed")
+        lines, labels = ax.get_legend_handles_labels()
+        lines2, labels2 = twin.get_legend_handles_labels()
+        ax.legend(lines + lines2, labels + labels2, loc="best", fontsize=8)
     fig.tight_layout()
     fig.savefig(FIGURES / "report_dmsaformer_calibration.png")
     plt.close(fig)
@@ -254,8 +245,8 @@ def plot_pipeline_flow() -> None:
         ("原始分钟级电力数据\n+ 月度天气变量", 0.05, 0.62),
         ("缺失处理与日级聚合\n求和/均值/派生余量", 0.26, 0.62),
         ("90天输入窗口\n90/365天输出窗口", 0.47, 0.62),
-        ("LSTM / Transformer\nHybrid / DMSAFormer", 0.68, 0.62),
-        ("验证集门控与校准\n只用valid不碰test", 0.47, 0.22),
+        ("正式三模型\nLSTM / Transformer / DMSAFormer", 0.68, 0.62),
+        ("DMSA自身验证集校准\n只用valid不碰test", 0.47, 0.22),
         ("测试集评估\nMSE/MAE mean±std", 0.68, 0.22),
     ]
     for text, x, y in boxes:

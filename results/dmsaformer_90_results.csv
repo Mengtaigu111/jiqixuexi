@@ -1,6 +1,6 @@
 model,output_len,seed,test_mse,test_mae,predictions
-dmsaformer,90,2026,156221.81960066292,305.26042561872305,results/predictions/dmsaformer_90_seed2026.csv
-dmsaformer,90,2027,152171.93853697242,299.60750528409545,results/predictions/dmsaformer_90_seed2027.csv
-dmsaformer,90,2028,154804.43062843342,300.3711302062911,results/predictions/dmsaformer_90_seed2028.csv
-dmsaformer,90,2029,155317.12299641463,301.01732460918714,results/predictions/dmsaformer_90_seed2029.csv
-dmsaformer,90,2030,151019.76411213484,299.393934375853,results/predictions/dmsaformer_90_seed2030.csv
+dmsaformer,90,2026,174636.65574918035,323.03506060517765,results/predictions/dmsaformer_90_seed2026.csv
+dmsaformer,90,2027,161328.44562714428,310.0176967814357,results/predictions/dmsaformer_90_seed2027.csv
+dmsaformer,90,2028,161368.42189369706,311.49716715422204,results/predictions/dmsaformer_90_seed2028.csv
+dmsaformer,90,2029,159012.9417514264,309.07462943401225,results/predictions/dmsaformer_90_seed2029.csv
+dmsaformer,90,2030,159183.42355803307,308.23387202426767,results/predictions/dmsaformer_90_seed2030.csv

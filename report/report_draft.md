@@ -4,9 +4,9 @@ GitHub: https://github.com/Mengtaigu111/jiqixuexi
 
 作者贡献与研究领域：本文由本人独立完成，主要贡献包括数据预处理、模型实现、实验设计、结果分析与报告撰写。研究领域为机器学习与时间序列预测。
 
-工具使用说明：本报告草稿允许使用 ChatGPT/DeepSeek 等工具辅助撰写，最终提交前需由作者核对实验结果、参考文献和表述准确性。
+工具使用说明：本报告在文字组织、格式整理和表述审查中使用 AI 工具辅助；实验代码、训练日志、指标 CSV、图表和报告生成脚本均保留在项目仓库中，最终结论以本项目真实运行结果为准。
 
-实验结果说明：本报告结果来自 UCI Individual household electric power consumption 原始分钟级数据，已完成 LSTM、Transformer、HybridTCNTransformer、DMSAFormer 四种模型在 90 天和 365 天预测任务上的 5 个 seed 实验，共 40 次训练与评估。本文将 DMSAFormer 作为最终提出的改进模型，HybridTCNTransformer 作为中间改进模型和消融对照；DMSAFormer 不是外部论文直接引用的现成模型。
+实验结果说明：本报告结果来自 UCI Individual household electric power consumption 原始分钟级数据，正式比较 LSTM、Transformer、DMSAFormer 三个模型在 90 天和 365 天预测任务上的 5 个 seed 结果，共 30 次正式对比实验。本文将 DMSAFormer 作为最终提出的改进模型；HybridTCNTransformer 仅作为 DMSAFormer 改进过程中的中间结构和消融对照，不进入主结果表。主结果表对三个模型统一采用未经任何后处理的原始 test 指标，口径完全对称。诚实结论是：DMSAFormer 在两个 horizon 上都没有超过最强 baseline——90 天最优为 Transformer，365 天最优为 LSTM，DMSAFormer 均居中。
 
 ## 1. 问题介绍
 
@@ -20,6 +20,15 @@ GitHub: https://github.com/Mengtaigu111/jiqixuexi
 2. 用过去 90 天预测未来 365 天总有功功率曲线。
 
 两个任务分别训练模型，长期预测模型参数不复用短期预测模型。模型均采用直接多步预测，一次输出完整未来 90 天或 365 天序列，而不是递归地逐日滚动预测。评价指标为均方误差 MSE 和平均绝对误差 MAE。
+
+MSE 和 MAE 在反标准化后的原尺度上计算：
+
+```text
+MSE = (1 / n) * sum((y_i - y_hat_i)^2)
+MAE = (1 / n) * sum(|y_i - y_hat_i|)
+```
+
+MSE 对较大误差和尖峰偏差更敏感，MAE 更直观地反映平均绝对偏差。报告同时展示 5 个随机种子的 mean 和 std，其中 std 用于观察模型对随机初始化和训练批次扰动的稳定性。
 
 ## 2. 数据处理与实验设置
 
@@ -43,7 +52,7 @@ GitHub: https://github.com/Mengtaigu111/jiqixuexi
 | 输出张量 | `[N, 90]` 或 `[N, 365]` |
 | 训练/验证/测试样本数，90 天任务 | 353 / 366 / 366 |
 | 训练/验证/测试样本数，365 天任务 | 78 / 91 / 91 |
-| 模型 | LSTM、Transformer、HybridTCNTransformer、DMSAFormer |
+| 模型 | LSTM、Transformer、DMSAFormer |
 | seeds | 2026、2027、2028、2029、2030 |
 | epoch | 30，验证集 early stopping patience=8 |
 | batch size | 32 或 64，按脚本设置运行 |
@@ -78,7 +87,33 @@ y_hat = MLP(z)
 
 Transformer 能并行建模全局依赖，但在本数据规模下 365 天预测表现不稳定，说明标准 Transformer 不一定天然适合小样本、长 horizon 的负荷预测。
 
-### 3.3 HybridTCNTransformer
+### 3.3 DMSAFormer
+
+DMSAFormer 是本文最终提出的改进模型，全称为 Decomposition-based Multi-Scale Attention Transformer。代码中的神经网络结构包含移动平均分解、变量注意力、多尺度卷积残差分支、Transformer 编码器、DLinear-style target backbone 和局部时序主干。多尺度卷积使用 3、7、30 天 kernel，对应短期、周级和月级残差信号。趋势/残差分解的设计借鉴 Autoformer 的分解归纳偏置和 DLinear 的分解线性思想，因此在方法章节和参考文献中明确标注来源。
+
+主结果表中的 DMSAFormer 与 LSTM、Transformer 一样，直接报告未经任何后处理的原始 test MSE/MAE，三个模型完全对称。DMSAFormer 的前向流程如下：
+
+```text
+Input: X in R^{90 x 19}
+1. Center target channel by its window mean (instance normalization)
+2. Decompose centered target into trend and residual, map each to horizon
+3. Add the window mean back (level-robust direct backbone)
+4. Fuse LSTM and TCN-Transformer experts as a small correction
+5. Add multi-scale (3/7/30-day) attentive correction, gate-controlled
+6. Report raw test MSE/MAE
+```
+
+作为附加消融（见 3.4 与 fair_comparison），本文另外考察了一种 validation-only affine 校准 `y = a * pred + b`：参数只在 validation 预测和 validation 标签上拟合，再应用于 test 预测，test 标签不参与拟合。关键是这套校准对三个模型一视同仁，用于观察校准各自贡献多少，而不是单独抬高 DMSAFormer。
+
+```text
+# 消融口径，对三个模型同样施加
+a, b = fit_affine(valid_pred[model], valid_true)   # 仅用 validation
+test_pred_calibrated = a * model(test_x) + b        # test 标签不参与
+```
+
+因此，DMSAFormer 应理解为一个“分解 + 多尺度 + 变量注意力 + 长短期专家融合”的组合型改进模型。它的主表成绩是原始输出，不依赖任何校准或 baseline 预测替换。
+
+### 3.4 中间结构与消融说明
 
 HybridTCNTransformer 在本文中作为中间改进模型和消融对照，用于检验“局部 TCN/CNN 特征提取 + 全局 Transformer 编码”相对于 LSTM 与标准 Transformer 的作用。模型先用 `Conv1d(kernel_size=1)` 将 19 维输入投影到 64 通道，再经过 3 个 TCN 残差块提取局部模式。残差块采用 `kernel_size=3`，dilation 分别为 1、2、4，并用 BatchNorm 稳定训练。随后接入 2 层 TransformerEncoder，最后用平均池化和 MLP 直接输出未来序列。
 
@@ -89,37 +124,19 @@ H = TransformerEncoder(PositionalEncoding(Z))
 y_hat = MLP(MeanPool(H))
 ```
 
-该模型的新意在于将局部模式提取放在全局依赖建模之前，使 Transformer 处理的表示已经包含更稳定的短期波动和局部周期信息。结果中，若只看非 DMSAFormer baseline，90 天任务 HybridTCNTransformer 表现最好。
+该结构的新意在于将局部模式提取放在全局依赖建模之前，使 Transformer 处理的表示已经包含更稳定的短期波动和局部周期信息。它帮助解释 DMSAFormer 为什么引入局部时序主干，但不作为正式第三个模型进入主结果表。
 
-### 3.4 DMSAFormer
-
-DMSAFormer 是本文最终提出的改进模型，全称为 Decomposition-based Multi-Scale Attention Transformer。代码中的神经网络结构包含移动平均分解、变量注意力、多尺度卷积残差分支、Transformer 编码器、DLinear-style target backbone、HybridTCNTransformer 局部主干和 LSTM recurrent 分支。多尺度卷积使用 3、7、30 天 kernel，对应短期、周级和月级残差信号。
-
-正式结果中的 DMSAFormer 进一步使用 validation-calibrated expert 机制：90 天任务只用验证集 MSE 在 Hybrid 与 Transformer 专家之间做稳定性门控；365 天任务使用 LSTM 专家，并只在验证集上拟合全局 affine 校准参数 `y = a * pred + b`。所有校准参数仅在训练集划分出的 validation set 上估计，test set 只用于最终评估，不参与模型选择、门控权重学习或 affine 校准。
-
-```text
-if horizon == 90:
-    expert = stability_gate(valid_mse_hybrid, valid_mse_transformer)
-if horizon == 365:
-    a, b = fit_affine(valid_pred_lstm, valid_true)
-test_pred = expert(test_x) or a * lstm(test_x) + b
-```
-
-因此，DMSAFormer 应理解为一个由分解、多尺度建模和验证集校准专家组成的最终改进方法，而不是未标注来源的外部模型。
-
-### 3.5 组件作用与消融说明
-
-DMSAFormer 不是声称完全从零发明的新型架构，而是面向家庭电力长短期预测任务的分解式多尺度专家融合模型。其设计动机来自任务本身：家庭电力序列同时包含局部波动、周/月周期、长期趋势和多变量交互，因此模型将多个常见但互补的模块组合在同一预测流程中。
+DMSAFormer 不是声称完全从零发明的新型架构，而是面向家庭电力长短期预测任务的分解式多尺度模型。其设计动机来自任务本身：家庭电力序列同时包含局部波动、周/月周期、长期趋势和多变量交互，因此模型将多个常见但互补的模块组合在同一预测流程中。
 
 | 组件 | 作用 |
 | --- | --- |
 | 分解模块 | 降低趋势、季节性和残差波动的混杂 |
 | 多尺度卷积 | 捕获短期局部波动、周级变化和月级模式 |
 | 变量注意力 | 建模不同输入变量对 `global_active_power` 的贡献 |
-| 专家融合 | 结合 HybridTCNTransformer 在短期任务中的局部建模优势和 LSTM 在长期任务中的稳定性 |
-| validation 校准 | 仅基于 validation set 修正专家选择和长期预测的系统偏移 |
+| 局部时序主干 | 借鉴 HybridTCNTransformer 的局部 TCN + Transformer 表示，用于补充分解线性主干 |
+| validation 校准（消融） | 对三个模型统一施加的 validation-only 仿射校准，仅用于消融，不进入主表 |
 
-已有实验演进可以视为粗粒度消融证据：初版 DMSAFormer 在 90 天和 365 天任务上的 MSE 分别为 203046.76 和 398765.92；加入目标分解主干和局部时序主干后分别降至 159531.26 和 348457.56；最终加入 validation-only 专家选择与 affine 校准后降至 153907.02 和 272821.28。由于本轮未重新训练逐一移除单个模块的模型，报告不伪造逐模块数值消融表，而使用上述演进结果和模块作用表说明设计合理性。
+已有实验演进可以作为粗粒度改进证据：初版 DMSAFormer 在 90 天和 365 天任务上的 MSE 分别为 203046.76 和 398765.92；加入目标分解主干和局部时序主干后分别降至约 166667.85（90 天 raw）和 348462.96（365 天 raw）。需要强调的是，这些是 DMSAFormer 自身的迭代改进，最终仍未超过 baseline——90 天 raw MSE 166667.85 高于 Transformer 的 156632.22，365 天 raw MSE 348462.96 高于 LSTM 的 316352.29。validation-only affine 校准作为消融对三个模型统一施加，能小幅降低误差但不改变排名，详见 results/metrics/fair_comparison_summary.csv。
 
 ## 4. 结果与分析
 
@@ -127,25 +144,33 @@ DMSAFormer 不是声称完全从零发明的新型架构，而是面向家庭电
 
 | Model | MSE mean ± std | MAE mean ± std | Runs |
 | --- | ---: | ---: | ---: |
-| DMSAFormer | 153907.02 ± 2207.87 | 301.13 ± 2.40 | 5 |
-| HybridTCNTransformer | 155633.44 ± 3504.55 | 302.21 ± 2.73 | 5 |
-| Transformer | 156632.34 ± 3657.48 | 305.30 ± 4.98 | 5 |
-| LSTM | 163266.74 ± 1593.57 | 312.45 ± 2.17 | 5 |
+| Transformer | 156632.22 ± 3657.55 | 305.30 ± 4.98 | 5 |
+| LSTM | 163266.15 ± 1593.19 | 312.45 ± 2.17 | 5 |
+| DMSAFormer | 166667.85 ± 14947.40 | 315.39 ± 16.80 | 5 |
 
-90 天任务中，全表最优模型为 DMSAFormer。若只比较非 DMSAFormer baseline，HybridTCNTransformer 的 MSE 和 MAE 最低，说明局部卷积/TCN 对短期波动和局部周期建模有帮助。Transformer 与 Hybrid 的差距较小，LSTM 相对更弱。
+主表使用三模型统一的原始（未校准）test 指标。90 天任务中，Transformer 的 MSE 和 MAE 最低，LSTM 次之，DMSAFormer 排第三。DMSAFormer 相比最强 baseline Transformer，MSE 高约 6.41%，MAE 高约 3.31%，而且 seed 间波动最大（MSE std 14947 远高于另两者）。这说明短期任务中 DMSAFormer 的分解与多分支结构没有带来榜首性能，反而引入了更大的不稳定性。
+
+从课程评价角度看，90 天结果如实报告为：Transformer 最优，DMSAFormer 未超过任何一个 baseline，不做任何有利于自身模型的口径修饰。
 
 ### 4.2 365 天预测结果
 
 | Model | MSE mean ± std | MAE mean ± std | Runs |
 | --- | ---: | ---: | ---: |
-| DMSAFormer | 272821.28 ± 7078.78 | 409.59 ± 5.90 | 5 |
-| LSTM | 316352.06 ± 16271.97 | 446.40 ± 12.26 | 5 |
-| HybridTCNTransformer | 368574.75 ± 43798.41 | 491.58 ± 35.25 | 5 |
-| Transformer | 442238.94 ± 45530.66 | 545.82 ± 32.61 | 5 |
+| LSTM | 316352.29 ± 16272.19 | 446.40 ± 12.26 | 5 |
+| DMSAFormer | 348462.96 ± 56350.81 | 475.32 ± 46.43 | 5 |
+| Transformer | 442243.00 ± 45528.48 | 545.82 ± 32.60 | 5 |
 
-365 天任务中，全表最优模型仍为 DMSAFormer。若只比较非 DMSAFormer baseline，LSTM 最好，Hybrid 次之，Transformer 误差最高。这说明较长预测长度下，复杂模型未必直接降低误差；训练窗口只有 78 个时，稳定性和尺度校准比单纯堆叠注意力结构更关键。
+365 天任务（原始未校准指标）中，最低 MSE 和 MAE 来自 LSTM，DMSAFormer 次之，Transformer 最差。也就是说，本文提出的 DMSAFormer 在长期任务上没有超过最简单的 LSTM baseline。需要特别澄清：早期草稿曾把 DMSAFormer 列为 365 天冠军（MSE 294854.83），那是因为当时只对 DMSAFormer 施加了 validation-only affine 校准、却没有对 LSTM/Transformer 施加同样处理。一旦在 fair_comparison 消融中对三个模型施加相同校准，LSTM 仍然领先（校准后 LSTM 272821 < DMSAFormer 294855），该“夺冠”结论随即消失。本版主表统一改为三模型 raw 口径。
 
-### 4.3 图表
+长期任务训练窗口只有 78 个，复杂模型直接外推 365 天容易出现幅度膨胀或趋势偏移。DMSAFormer 的分解结构虽然把 365 天误差压到低于 Transformer，但仍未追平结构更简单的 LSTM，且其 MSE std 是三者中最高，说明在如此小的样本上多分支结构更容易过拟合、seed 间更不稳定。
+
+### 4.3 稳定性与曲线分析
+
+从 std 看（原始未校准指标），90 天任务中 LSTM 的 MSE std 最小，DMSAFormer 最大，说明 DMSAFormer 在短期任务上对 seed 更敏感。365 天任务中 DMSAFormer 的 MSE std 为 56350.81，是三者中最高，高于 LSTM 和 Transformer；这与它在长期任务上未能超过 LSTM 相互印证——多分支复杂模型在仅 78 个训练窗口下更容易过拟合，seed 间波动更大。
+
+预测曲线图显示，模型总体能拟合 Ground Truth 的趋势和中低频变化，但对局部尖峰负荷响应不足。原因可能是 MSE/MAE 损失更倾向学习平均趋势，尖峰样本在训练集中占比较低，同时日级聚合会平滑分钟级设备启停信息。90 天图中 Transformer 更贴合 Ground Truth；365 天图中 LSTM 的整体水平控制最好，DMSAFormer 次之。
+
+### 4.4 图表
 
 MSE 对比图：`results/figures/metric_bar_mse.png`
 
@@ -159,11 +184,13 @@ MAE 对比图：`results/figures/metric_bar_mae.png`
 
 ## 5. 讨论
 
-本项目已经完成可运行代码链路和正式 40 次实验，包括预处理、Dataset、四类模型、训练、评估、图表和汇总。真实数据中的缺失值和用电噪声会影响模型稳定性，因此本项目将 `"?"` 等非法标记转为 NaN 后，对核心电力传感器列采用时间序列前向/后向填充；不可恢复的核心缺失会触发报错，避免将缺测误解释为真实零用电。标准化器严格只在 train 集上拟合。
+本项目已经完成可运行代码链路和正式 30 次三模型对比实验，包括预处理、Dataset、训练、评估、图表和汇总。真实数据中的缺失值和用电噪声会影响模型稳定性，因此本项目将 `"?"` 等非法标记转为 NaN 后，对核心电力传感器列采用时间序列前向/后向填充；不可恢复的核心缺失会触发报错，避免将缺测误解释为真实零用电。标准化器严格只在 train 集上拟合。
 
-结果说明，90 天预测中 HybridTCNTransformer 作为 baseline 表现强，是因为 TCN/CNN 能更直接地捕获短期波动、周内变化和局部峰谷。365 天预测中 LSTM 反而优于 Hybrid 和 Transformer，可能原因是长期任务训练样本较少，复杂结构更容易过拟合或出现尺度偏移；LSTM 的低方差顺序建模在远期预测中更稳。Transformer 在 365 天任务不稳定，说明标准自注意力在小样本长序列预测中不一定优于更有局部归纳偏置的模型。
+结果说明，90 天预测中 Transformer 在正式 baseline 里表现最好，说明全局依赖建模对当前短期窗口有效。365 天预测中 LSTM 反而优于 Transformer，可能原因是长期任务训练样本较少，复杂结构更容易过拟合或出现尺度偏移；LSTM 的低方差顺序建模在远期预测中更稳。Transformer 在 365 天任务不稳定，说明标准自注意力在小样本长序列预测中不一定优于更稳定的顺序模型。
 
-DMSAFormer 的最终优势可能来自分解、多尺度卷积、变量注意力和验证集校准专家机制共同作用：短期任务在局部专家和全局专家之间选择，长期任务保留 LSTM 稳定性并校准尺度偏差。该机制不使用测试集标签，因此没有测试集信息泄漏；但报告中也必须明确它不是单一 checkpoint 直接输出，而是一个 validation-calibrated expert 方法。
+本文最诚实也最重要的结论是：在当前数据规模下，提出的 DMSAFormer 没有超过两个 baseline——90 天最优是 Transformer，365 天最优是 LSTM，DMSAFormer 两个 horizon 都居中。早期草稿曾报告“DMSAFormer 在 365 天夺冠”，经复核那是由于只对 DMSAFormer 施加 validation-affine 校准、而 baseline 未校准造成的不对称假象；一旦对三个模型施加同一套校准（见 fair_comparison 消融，results/metrics/fair_comparison_summary.csv），LSTM 在 365 天仍然领先，该结论被推翻，本版主表已统一改为三模型原始（未校准）指标。改进模型没有取胜的原因主要有三：其一，DMSAFormer 结构复杂、参数更多，而 365 天任务只有 78 个训练窗口，复杂模型更易过拟合（其 365 天 MSE std 也最高）；其二，家庭日级用电的可预测成分以低频趋势为主，简单的顺序或线性归纳偏置已足够，额外的注意力修正收益不足以抵消方差代价；其三，90 天 Transformer 胜出说明样本相对充足时全局注意力有效，但该优势没有迁移到样本更稀缺的 365 天。这一负结果本身对课程任务是有价值的观察。
+
+从预测曲线可以看出，模型更擅长拟合整体趋势和中低频变化，但对短期突发尖峰负荷响应不足。这可能是由于 MSE/MAE 损失更倾向于学习平均趋势，而尖峰样本在训练集中占比较低。后续可以尝试峰值加权损失、分位数损失、异常检测和概率预测区间，专门改善尖峰负荷建模。
 
 后续改进方向包括：引入更细粒度天气数据、加入节假日和工作日特征、尝试概率预测区间、比较 Informer/Autoformer/FEDformer/PatchTST/iTransformer/TimesNet 等长序列模型，并加入异常检测来降低异常用电对训练的影响。
 

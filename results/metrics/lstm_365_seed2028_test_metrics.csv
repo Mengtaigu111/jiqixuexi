@@ -1,2 +1,2 @@
 model,output_len,seed,test_mse,test_mae,predictions
-lstm,365,2028,314680.95665766933,445.8340847400216,results/predictions/lstm_365_seed2028.csv
+lstm,365,2028,314679.25734487025,445.83288175477696,results/predictions/lstm_365_seed2028.csv

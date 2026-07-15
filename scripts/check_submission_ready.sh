@@ -22,19 +22,39 @@ def pdf_page_count(path: Path) -> int:
 
 summary = pd.read_csv("results/metrics/summary.csv")
 models = sorted(summary["Model"].unique())
-expected_models = ["dmsaformer", "hybrid", "lstm", "transformer"]
-if len(summary) != 8 or models != expected_models or not bool((summary["Runs"] == 5).all()):
+expected_models = ["dmsaformer", "lstm", "transformer"]
+if len(summary) != 6 or models != expected_models or not bool((summary["Runs"] == 5).all()):
     runs = summary["Runs"].tolist()
     raise SystemExit(f"Unexpected summary.csv contents: rows={len(summary)} models={models} runs={runs}")
 print(f"summary.csv: {len(summary)} rows, models={models}, Runs all 5")
+
+calibration_path = Path("results/metrics/dmsaformer_calibration_choices.csv")
+if not calibration_path.exists():
+    raise SystemExit(f"Missing calibration audit file: {calibration_path}")
+calibration = pd.read_csv(calibration_path)
+required_columns = {"horizon", "seed", "source_model", "calibration_method"}
+missing_columns = sorted(required_columns - set(calibration.columns))
+if missing_columns:
+    raise SystemExit(f"Calibration audit file missing columns: {missing_columns}")
+source = calibration["source_model"].astype(str).str.lower()
+method = calibration["calibration_method"].astype(str)
+if not bool((source == "dmsaformer").all()):
+    bad_rows = calibration.loc[source != "dmsaformer", ["horizon", "seed", "source_model"]].to_dict("records")
+    raise SystemExit(f"DMSAFormer calibration must use only DMSAFormer predictions; bad rows={bad_rows}")
+if not bool((method == "validation_affine_self").all()):
+    bad_rows = calibration.loc[method != "validation_affine_self", ["horizon", "seed", "calibration_method"]].to_dict("records")
+    raise SystemExit(f"Unexpected DMSAFormer calibration method; bad rows={bad_rows}")
+if len(calibration) != 10 or sorted(calibration["horizon"].unique().tolist()) != [90, 365]:
+    raise SystemExit(f"Unexpected calibration audit shape: rows={len(calibration)} horizons={sorted(calibration['horizon'].unique().tolist())}")
+print("dmsaformer calibration: source_model all dmsaformer, method validation_affine_self")
 
 for pdf_path in ["report/report.pdf", "report/ML_household_power_report.pdf"]:
     path = Path(pdf_path)
     if not path.exists() or path.stat().st_size <= 0:
         raise SystemExit(f"Missing or empty PDF: {pdf_path}")
     pages = pdf_page_count(path)
-    if pages != 10:
-        raise SystemExit(f"Unexpected page count for {pdf_path}: {pages}")
+    if not 12 <= pages <= 15:
+        raise SystemExit(f"Unexpected page count for {pdf_path}: {pages}; expected 12-15 pages")
     print(f"{pdf_path}: {pages} pages")
 
 for image_path in [
